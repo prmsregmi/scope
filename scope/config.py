@@ -1,0 +1,124 @@
+"""Configuration management for SCOPE."""
+
+import os
+from dataclasses import dataclass, field
+from typing import Optional
+
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
+
+# Default topics from the original notebook
+DEFAULT_TOPICS = [
+    "News",
+    "Research",
+    "Technology",
+    "Travel",
+    "Personal",
+    "Education",
+    "Career",
+    "Health",
+    "Sports",
+    "Vacation",
+    "Movie",
+    "Entertainment",
+    "Book",
+    "Event",
+    "Food",
+    "Politics",
+    "Finance",
+    "Relationships",
+    "Religion",
+    "Immigration",
+    "Fantasy",
+]
+
+
+@dataclass
+class ScopeConfig:
+    """Configuration for SCOPE analysis."""
+
+    dataset_path: str
+    output_path: str = "results/scope_results.csv"
+    topics: list[str] = field(default_factory=lambda: DEFAULT_TOPICS.copy())
+    probability_threshold: float = 0.07
+    embedding_provider: str = "sentence-transformers"
+    embedding_model: Optional[str] = None
+    jina_api_key: Optional[str] = None
+    jina_parallel_requests: bool = False
+    jina_max_workers: int = 5
+    keybert_model: str = "all-MiniLM-L12-v2"
+    start_date: Optional[str] = None
+    end_date: Optional[str] = None
+    enable_spell_check: bool = True
+    enable_lemmatization: bool = True
+    verbose: bool = False
+    include_summary: bool = True
+    # PostgreSQL vector storage
+    use_postgres: bool = False
+    postgres_host: Optional[str] = None
+    postgres_port: Optional[int] = None
+    postgres_dbname: Optional[str] = None
+    postgres_user: Optional[str] = None
+    postgres_password: Optional[str] = None
+
+    def __post_init__(self) -> None:
+        """Validate and set defaults after initialization."""
+        # Set default embedding model if not specified
+        if self.embedding_model is None:
+            if self.embedding_provider == "sentence-transformers":
+                self.embedding_model = "all-MiniLM-L12-v2"
+            elif self.embedding_provider == "jina":
+                self.embedding_model = "jina-embeddings-v3"
+
+        # Get Jina API key from environment if not provided
+        if self.embedding_provider == "jina" and self.jina_api_key is None:
+            self.jina_api_key = os.getenv("JINA_API_KEY")
+            if not self.jina_api_key:
+                raise ValueError(
+                    "Jina API key required. Set JINA_API_KEY environment variable or pass --jina-api-key"
+                )
+
+        # Validate probability threshold
+        if not 0.0 < self.probability_threshold < 1.0:
+            raise ValueError("Probability threshold must be between 0 and 1")
+
+        # Validate embedding provider
+        if self.embedding_provider not in ["sentence-transformers", "jina"]:
+            raise ValueError(
+                f"Unknown embedding provider: {self.embedding_provider}. "
+                "Must be 'sentence-transformers' or 'jina'"
+            )
+
+    @classmethod
+    def from_env(cls, dataset_path: Optional[str] = None) -> "ScopeConfig":
+        """Create configuration from environment variables and defaults.
+
+        Args:
+            dataset_path: Path to the dataset file (uses SCOPE_DATASET_PATH env var if not provided)
+
+        Returns:
+            ScopeConfig with values from environment variables or defaults
+        """
+        # Use provided path or fall back to env var or default
+        if dataset_path is None:
+            dataset_path = os.getenv("SCOPE_DATASET_PATH", "data/Conversation.csv")
+
+        return cls(
+            dataset_path=dataset_path,
+            embedding_provider=os.getenv("SCOPE_EMBEDDING_PROVIDER", "sentence-transformers"),
+            embedding_model=os.getenv("SCOPE_EMBEDDING_MODEL"),
+            probability_threshold=float(os.getenv("SCOPE_PROBABILITY_THRESHOLD", "0.07")),
+            keybert_model=os.getenv("SCOPE_KEYBERT_MODEL", "all-MiniLM-L12-v2"),
+            jina_api_key=os.getenv("JINA_API_KEY"),
+            enable_spell_check=os.getenv("SCOPE_SPELL_CHECK", "true").lower() == "true",
+            enable_lemmatization=os.getenv("SCOPE_LEMMATIZE", "true").lower() == "true",
+            output_path=os.getenv("SCOPE_OUTPUT_PATH", "results/scope_results.csv"),
+        )
+
+    def merge_with_args(self, **kwargs) -> None:
+        """Merge configuration with command-line arguments (CLI args take precedence)."""
+        for key, value in kwargs.items():
+            if value is not None and hasattr(self, key):
+                setattr(self, key, value)
