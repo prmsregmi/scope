@@ -1,0 +1,476 @@
+"""Command-line interface for SCOPE."""
+
+import argparse
+import sys
+import time
+from datetime import datetime, timedelta
+from typing import Any, Optional
+
+import pandas as pd
+
+from scope.analysis import ContiguousBlockFinder, SegmentProcessor
+from scope.config import ScopeConfig
+from scope.embeddings import get_embedding_provider
+from scope.io import DatasetLoader, ResultWriter
+from scope.modeling import ProbabilityCalculator
+from scope.preprocessing import TextCleaner
+from scope.utils import get_logger, setup_logging
+
+
+def parse_arguments() -> argparse.Namespace:
+    """Parse command-line arguments.
+
+    Returns:
+        Parsed arguments
+    """
+    parser = argparse.ArgumentParser(
+        description="SCOPE - Topic modeling CLI for finding contiguous conversation blocks",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+
+    # Dataset path (optional - defaults to SCOPE_DATASET_PATH env var or data/Conversation.csv)
+    parser.add_argument(
+        "dataset_path",
+        nargs="?",
+        default=None,
+        help="Path to input CSV file (default: SCOPE_DATASET_PATH env var or data/Conversation.csv)",
+    )
+
+    # Output options
+    parser.add_argument(
+        "-o",
+        "--output",
+        dest="output_path",
+        default="results/scope_results.csv",
+        help="Output CSV path (default: results/scope_results.csv)",
+    )
+
+    # Core options
+    parser.add_argument(
+        "-t",
+        "--threshold",
+        dest="probability_threshold",
+        type=float,
+        help="Probability threshold (default: 0.05)",
+    )
+
+    parser.add_argument(
+        "--topics",
+        help="Comma-separated topic list (overrides defaults)",
+    )
+
+    # Embedding options
+    parser.add_argument(
+        "-e",
+        "--embedding",
+        dest="embedding_provider",
+        choices=["sentence-transformers", "jina"],
+        help="Embedding provider (default: sentence-transformers)",
+    )
+
+    parser.add_argument(
+        "--embedding-model",
+        help="Model name for the embedding provider",
+    )
+
+    parser.add_argument(
+        "--jina-api-key",
+        help="Jina API key (or use JINA_API_KEY env var)",
+    )
+
+    # KeyBERT options
+    parser.add_argument(
+        "--keybert-model",
+        help="Model name for KeyBERT keyword extraction (default: all-MiniLM-L12-v2)",
+    )
+
+    # Date filtering
+    parser.add_argument(
+        "--start-date",
+        help="Start date YYYY-MM-DD (inclusive)",
+    )
+
+    parser.add_argument(
+        "--end-date",
+        help="End date YYYY-MM-DD (inclusive)",
+    )
+
+    # Preprocessing options
+    parser.add_argument(
+        "--no-spell-check",
+        action="store_false",
+        dest="enable_spell_check",
+        help="Disable spell checking",
+    )
+
+    parser.add_argument(
+        "--no-lemmatize",
+        action="store_false",
+        dest="enable_lemmatization",
+        help="Disable lemmatization",
+    )
+
+    # Output options
+    parser.add_argument(
+        "--no-summary",
+        action="store_false",
+        dest="include_summary",
+        help="Don't generate summary statistics",
+    )
+
+    parser.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        help="Verbose output",
+    )
+
+    parser.add_argument(
+        "--quiet",
+        action="store_true",
+        help="Minimal output",
+    )
+
+    # PostgreSQL options
+    parser.add_argument(
+        "--use-postgres",
+        action="store_true",
+        help="Use PostgreSQL vector store for embeddings (requires pgvector)",
+    )
+
+    parser.add_argument(
+        "--postgres-host",
+        help="PostgreSQL host (default: localhost)",
+    )
+
+    parser.add_argument(
+        "--postgres-port",
+        type=int,
+        help="PostgreSQL port (default: 5432)",
+    )
+
+    parser.add_argument(
+        "--postgres-db",
+        dest="postgres_dbname",
+        help="PostgreSQL database name (default: scope)",
+    )
+
+    parser.add_argument(
+        "--postgres-user",
+        help="PostgreSQL user (default: postgres)",
+    )
+
+    parser.add_argument(
+        "--postgres-password",
+        help="PostgreSQL password",
+    )
+
+    # Version
+    parser.add_argument(
+        "--version",
+        action="version",
+        version="SCOPE 0.1.0",
+    )
+
+    return parser.parse_args()
+
+
+def organize_data_by_user_and_hour(
+    df: pd.DataFrame,
+    text_cleaner: TextCleaner,
+    date_list: list[str],
+    logger,
+) -> tuple[dict[str, list[list[str]]], dict[str, list[str]], dict[str, list[list[Any]]]]:
+    """Organize dataset by user and hour.
+
+    Args:
+        df: DataFrame with conversation data
+        text_cleaner: Text cleaning instance
+        date_list: List of dates in date range
+        logger: Logger instance
+
+    Returns:
+        Tuple of (hourly_cleaned_texts, hourly_original_texts, hourly_messages) dictionaries
+    """
+    logger.info("Organizing data by user and hour...")
+
+    # Get unique users
+    users = df["Sender"].unique().tolist()
+    num_hours = 24 * len(date_list)
+
+    # Initialize data structures
+    user_hourly_texts = {}
+    user_hourly_original = {}
+    user_hourly_messages = {}
+
+    for user in users:
+        user_hourly_texts[user] = [[] for _ in range(num_hours)]
+        user_hourly_original[user] = ["" for _ in range(num_hours)]
+        user_hourly_messages[user] = [[] for _ in range(num_hours)]
+
+    # Process each message
+    for _, row in df.iterrows():
+        user = row["Sender"]
+        timestamp = row["Timestamp"]
+        text = str(row["Text"])
+
+        # Calculate hour index
+        date_str = timestamp.strftime("%Y-%m-%d")
+        if date_str not in date_list:
+            continue
+
+        day_idx = date_list.index(date_str)
+        hour = timestamp.hour
+        hour_idx = day_idx * 24 + hour
+
+        # Clean text for frequency counting
+        cleaned_words = text_cleaner.clean(text)
+
+        # Store cleaned text
+        user_hourly_texts[user][hour_idx].extend(cleaned_words)
+
+        # Store original text (for embeddings) - append to existing text in this hour
+        if user_hourly_original[user][hour_idx]:
+            user_hourly_original[user][hour_idx] += " " + text
+        else:
+            user_hourly_original[user][hour_idx] = text
+
+        # Store full message info: [Chatroom, Sender, Date, Time, Text, Prompt]
+        message_info = [
+            row["Chatroom"],
+            user,
+            date_str,
+            timestamp.strftime("%H:%M:%S"),
+            text,
+            row.get("Prompt", ""),
+        ]
+        user_hourly_messages[user][hour_idx].append(message_info)
+
+    logger.info(f"Organized data for {len(users)} users across {num_hours} hours")
+
+    return user_hourly_texts, user_hourly_original, user_hourly_messages
+
+
+def run_analysis(config: ScopeConfig) -> None:
+    """Run the full SCOPE analysis pipeline.
+
+    Args:
+        config: SCOPE configuration
+    """
+    # Setup logging
+    logger = setup_logging(config.verbose)
+
+    if not config.verbose and not hasattr(config, "quiet"):
+        logger.info("Starting SCOPE analysis...")
+
+    start_time = time.time()
+
+    # Initialize PostgreSQL vector store if enabled
+    vector_store = None
+    if config.use_postgres:
+        try:
+            from scope.database import DatabaseConfig, VectorStore
+
+            # Build database config from ScopeConfig
+            db_config = DatabaseConfig(
+                host=config.postgres_host or "localhost",
+                port=config.postgres_port or 5432,
+                dbname=config.postgres_dbname or "scope",
+                user=config.postgres_user or "postgres",
+                password=config.postgres_password or "",
+            )
+
+            logger.info(
+                f"Initializing PostgreSQL vector store at {db_config.host}:{db_config.port}"
+            )
+            vector_store = VectorStore(db_config)
+            vector_store.connect()
+            vector_store.initialize_schema()
+
+            stats = vector_store.get_stats()
+            logger.info(
+                f"Connected to PostgreSQL: {stats['topic_count']} topics, "
+                f"{stats['keyword_count']} keywords cached"
+            )
+
+        except ImportError:
+            logger.error(
+                "PostgreSQL support not installed. Install with: pip install 'scope[postgres]'"
+            )
+            sys.exit(1)
+        except Exception as e:
+            logger.error(f"Failed to initialize PostgreSQL: {e}")
+            sys.exit(1)
+
+    try:
+        # 1. Load dataset
+        logger.info(f"Loading dataset from {config.dataset_path}")
+        loader = DatasetLoader(config.dataset_path)
+        df = loader.load(config.start_date, config.end_date)
+        logger.info(f"Loaded {len(df)} messages")
+
+        # Get date range
+        if config.start_date and config.end_date:
+            start_date = config.start_date
+            end_date = config.end_date
+        else:
+            start_date, end_date = loader.get_date_range(df)
+            logger.info(f"Date range: {start_date} to {end_date}")
+
+        # Generate date list
+        date_list = []
+        current = datetime.strptime(start_date, "%Y-%m-%d")
+        end = datetime.strptime(end_date, "%Y-%m-%d")
+
+        while current <= end:
+            date_list.append(current.strftime("%Y-%m-%d"))
+            current += timedelta(days=1)
+
+        logger.info(f"Processing {len(date_list)} days")
+
+        # 2. Preprocess text
+        logger.info("Preprocessing text...")
+        text_cleaner = TextCleaner(
+            enable_spell_check=config.enable_spell_check,
+            enable_lemmatization=config.enable_lemmatization,
+        )
+
+        # Organize data by user and hour (now includes original text)
+        user_hourly_texts, user_hourly_original, user_hourly_messages = (
+            organize_data_by_user_and_hour(df, text_cleaner, date_list, logger)
+        )
+
+        # 3. Get embedding provider (Jina or SentenceTransformers)
+        logger.info(f"Initializing embedding provider: {config.embedding_provider}")
+        provider_kwargs = {
+            "model": config.embedding_model,
+            "api_key": config.jina_api_key,
+        }
+
+        # Add parallel request parameters for JINA
+        if config.embedding_provider == "jina":
+            provider_kwargs["parallel_requests"] = config.jina_parallel_requests
+            provider_kwargs["max_workers"] = config.jina_max_workers
+            if config.jina_parallel_requests:
+                logger.info(f"Using parallel requests with {config.jina_max_workers} workers")
+
+        embedding_provider = get_embedding_provider(
+            config.embedding_provider,
+            **provider_kwargs
+        )
+
+        # 4. Initialize Probability Calculator (KeyBERT + Cosine Similarity)
+        logger.info("Setting up KeyBERT + Cosine Similarity probability calculator...")
+        prob_calc = ProbabilityCalculator(
+            topics=config.topics,
+            embedding_provider=embedding_provider,
+            keybert_model=config.keybert_model,
+            vector_store=vector_store,
+        )
+
+        # 5. Find contiguous blocks
+        logger.info(
+            f"Finding contiguous blocks (threshold: {config.probability_threshold})..."
+        )
+        block_finder = ContiguousBlockFinder(
+            config.probability_threshold,
+            prob_calc,
+        )
+
+        user_blocks = block_finder.find_all_blocks(
+            user_hourly_texts,
+            user_hourly_original,
+            config.topics,
+        )
+
+        # 6. Process segments
+        logger.info("Processing segments...")
+        processor = SegmentProcessor(date_list)
+
+        segments = processor.process_segments(
+            user_blocks,
+            user_hourly_texts,
+            user_hourly_original,
+            user_hourly_messages,
+            prob_calc,
+        )
+
+        logger.info(f"Found {len(segments)} segments")
+
+        # 8. Write results
+        logger.info(f"Writing results to {config.output_path}")
+        writer = ResultWriter(config.output_path)
+        writer.write(segments)
+
+        # Write summary if requested
+        if config.include_summary:
+            wall_time = time.time() - start_time
+            summary_path = writer.write_summary(
+                segments,
+                wall_time,
+                config.probability_threshold,
+            )
+            logger.info(f"Summary written to {summary_path}")
+
+        wall_time = time.time() - start_time
+        logger.info(f"Analysis complete in {wall_time:.2f} seconds")
+
+    except Exception as e:
+        logger.error(f"Analysis failed: {e}")
+        if config.verbose:
+            import traceback
+
+            traceback.print_exc()
+        sys.exit(1)
+    finally:
+        # Cleanup: close PostgreSQL connection if it was opened
+        if vector_store is not None:
+            try:
+                vector_store.close()
+                logger.debug("Closed PostgreSQL connection")
+            except Exception:
+                pass
+
+
+def main() -> None:
+    """Main entry point for CLI."""
+    args = parse_arguments()
+
+    # Build configuration from environment variables and defaults
+    config = ScopeConfig.from_env(dataset_path=args.dataset_path)
+
+    # Override with command-line arguments (CLI args take precedence over .env)
+    cli_args = {
+        "output_path": args.output_path,
+        "probability_threshold": args.probability_threshold,
+        "embedding_provider": args.embedding_provider,
+        "embedding_model": args.embedding_model,
+        "jina_api_key": args.jina_api_key,
+        "keybert_model": args.keybert_model,
+        "start_date": args.start_date,
+        "end_date": args.end_date,
+        "enable_spell_check": args.enable_spell_check if hasattr(args, "enable_spell_check") else None,
+        "enable_lemmatization": args.enable_lemmatization if hasattr(args, "enable_lemmatization") else None,
+        "verbose": args.verbose,
+        "include_summary": args.include_summary if hasattr(args, "include_summary") else None,
+        "use_postgres": args.use_postgres if hasattr(args, "use_postgres") else None,
+        "postgres_host": args.postgres_host if hasattr(args, "postgres_host") else None,
+        "postgres_port": args.postgres_port if hasattr(args, "postgres_port") else None,
+        "postgres_dbname": args.postgres_dbname if hasattr(args, "postgres_dbname") else None,
+        "postgres_user": args.postgres_user if hasattr(args, "postgres_user") else None,
+        "postgres_password": args.postgres_password if hasattr(args, "postgres_password") else None,
+    }
+
+    # Parse topics if provided
+    if args.topics:
+        cli_args["topics"] = [t.strip() for t in args.topics.split(",")]
+
+    # Merge CLI args (only non-None values override)
+    config.merge_with_args(**cli_args)
+
+    # Run analysis
+    run_analysis(config)
+
+
+if __name__ == "__main__":
+    main()
