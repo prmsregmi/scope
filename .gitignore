@@ -5,12 +5,24 @@ __pycache__/
 *.so
 .Python
 build/
+develop-eggs/
 dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
 *.egg-info/
+.installed.cfg
 *.egg
 
 # Virtual environments
 venv/
+ENV/
 env/
 .venv
 
@@ -20,10 +32,34 @@ env/
 *.swp
 *.swo
 *~
+.claude/
+claude.md
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
 
 # Environment variables
 .env
 
+# Project specific
+*.lda
+*.model
+*.dict
+
+# Results folder (all outputs, evaluations, test data, temporary docs)
+results/
+
 # OS
 .DS_Store
 Thumbs.db
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
+!legacy/*.ipynb
+
+# uv
+.uv/
