@@ -453,7 +453,9 @@ def main() -> None:
         "enable_lemmatization": args.enable_lemmatization if hasattr(args, "enable_lemmatization") else None,
         "verbose": args.verbose,
         "include_summary": args.include_summary if hasattr(args, "include_summary") else None,
-        "use_postgres": args.use_postgres if hasattr(args, "use_postgres") else None,
+        # For boolean flags (store_true), only override if explicitly True
+        # Otherwise, keep the env var value to avoid overriding True with False
+        "use_postgres": args.use_postgres if args.use_postgres else None,
         "postgres_host": args.postgres_host if hasattr(args, "postgres_host") else None,
         "postgres_port": args.postgres_port if hasattr(args, "postgres_port") else None,
         "postgres_dbname": args.postgres_dbname if hasattr(args, "postgres_dbname") else None,

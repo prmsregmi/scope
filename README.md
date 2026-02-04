@@ -89,6 +89,53 @@ scope conversations.csv \
   -o may_results.csv
 ```
 
+### Using PostgreSQL (Optional)
+
+SCOPE supports PostgreSQL with pgvector for persistent embedding storage and faster similarity search. This provides significant speedup on subsequent runs with cached embeddings.
+
+**Setup:**
+
+1. Install PostgreSQL with pgvector extension (if not already installed)
+
+2. Install SCOPE with PostgreSQL support:
+   ```bash
+   uv sync --extra postgres
+   ```
+
+3. Configure database connection in `.env` file:
+   ```bash
+   SCOPE_USE_POSTGRES=true
+   DATABASE_HOST=localhost
+   DATABASE_PORT=5432
+   DATABASE_NAME=scope
+   DATABASE_USER=your_username
+   DATABASE_PASSWORD=your_password
+   ```
+
+4. Run analysis (schema auto-created on first run):
+   ```bash
+   scope conversations.csv
+   ```
+
+**Alternative: Using CLI flags**
+```bash
+scope conversations.csv \
+  --use-postgres \
+  --postgres-host localhost \
+  --postgres-db scope \
+  --postgres-user your_username
+```
+
+**Docker Setup (Recommended for quick start):**
+```bash
+docker run -d --name scope-postgres \
+  -p 5432:5432 \
+  -e POSTGRES_DB=scope \
+  ankane/pgvector
+```
+
+For vector indexing details, advanced configuration, and troubleshooting, see [POSTGRES_SETUP.md](POSTGRES_SETUP.md)
+
 ## Configuration
 
 SCOPE can be configured through environment variables (.env file) or command-line arguments. CLI arguments always take precedence over .env values.

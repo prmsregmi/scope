@@ -105,6 +105,10 @@ class ScopeConfig:
         if dataset_path is None:
             dataset_path = os.getenv("SCOPE_DATASET_PATH", "data/Conversation.csv")
 
+        # Get PostgreSQL configuration from environment
+        # Use system user as default for postgres_user
+        default_pg_user = os.getenv("USER", "postgres")
+
         return cls(
             dataset_path=dataset_path,
             embedding_provider=os.getenv("SCOPE_EMBEDDING_PROVIDER", "sentence-transformers"),
@@ -115,6 +119,13 @@ class ScopeConfig:
             enable_spell_check=os.getenv("SCOPE_SPELL_CHECK", "true").lower() == "true",
             enable_lemmatization=os.getenv("SCOPE_LEMMATIZE", "true").lower() == "true",
             output_path=os.getenv("SCOPE_OUTPUT_PATH", "results/scope_results.csv"),
+            # PostgreSQL configuration
+            use_postgres=os.getenv("SCOPE_USE_POSTGRES", "false").lower() == "true",
+            postgres_host=os.getenv("DATABASE_HOST"),
+            postgres_port=int(os.getenv("DATABASE_PORT", "5432")),
+            postgres_dbname=os.getenv("DATABASE_NAME"),
+            postgres_user=os.getenv("DATABASE_USER", default_pg_user),
+            postgres_password=os.getenv("DATABASE_PASSWORD", ""),
         )
 
     def merge_with_args(self, **kwargs) -> None:
