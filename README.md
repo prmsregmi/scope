@@ -18,6 +18,7 @@ SCOPE analyzes conversational data to find temporal segments where users are dis
 - **Comprehensive Preprocessing**: Text cleaning, stop word removal, spell checking, and lemmatization
 - **Configurable**: Environment variables (.env) or command-line arguments
 - **Smart Caching**: Caches embeddings and probability calculations for performance
+- **Fast Performance**: Processes ~155k messages in 8-10 seconds
 
 ## Installation
 
@@ -26,51 +27,29 @@ SCOPE analyzes conversational data to find temporal segments where users are dis
 - Python 3.12+
 - uv (for package management)
 
-### Install with SentenceTransformers (Recommended)
+### Quick Install (Recommended)
 
 ```bash
 # Install uv if you haven't already
 curl -LsSf https://astral.sh/uv/install.sh | sh
 
-# Clone and install
+# Clone and install with all features
 cd SCOPE
-
-# Install with sentence-transformers (local embeddings)
-uv sync --extra sentence-transformers
+uv sync --extra all
 
 # Download required spaCy model
 uv run python -m spacy download en_core_web_sm
 ```
 
-### Install with Jina AI Support
+### Minimal Install
 
 ```bash
-# Install with Jina API support
-uv sync --extra jina
-
-# Download spaCy model
+# Install with only sentence-transformers (local embeddings)
+uv sync --extra sentence-transformers
 uv run python -m spacy download en_core_web_sm
 ```
 
-### Install with PostgreSQL Vector Storage
-
-```bash
-# Install with PostgreSQL support
-uv sync --extra postgres
-
-# Requires PostgreSQL with pgvector extension
-# See: https://github.com/pgvector/pgvector
-```
-
-### Install Everything
-
-```bash
-# Install all optional dependencies (sentence-transformers, jina, postgres, dev tools)
-uv sync --extra all
-
-# Download spaCy model
-uv run python -m spacy download en_core_web_sm
-```
+For PostgreSQL support, install with `--extra postgres`. Requires pgvector extension: https://github.com/pgvector/pgvector
 
 ## Quick Start
 
@@ -249,31 +228,6 @@ scope conversations.csv \
   -v
 ```
 
-### Example 4: Using Environment Variables
-
-```bash
-# Set up .env file with your preferences
-cat > .env << EOF
-SCOPE_EMBEDDING_PROVIDER=jina
-JINA_API_KEY=your_key_here
-SCOPE_PROBABILITY_THRESHOLD=0.08
-EOF
-
-# Run analysis (uses .env settings)
-scope conversations.csv -v
-```
-
-### Example 5: With PostgreSQL Vector Storage
-
-```bash
-# Use PostgreSQL for embedding storage
-scope --use-postgres \
-  --postgres-host localhost \
-  --postgres-db scope \
-  --postgres-user postgres \
-  conversations.csv -v
-```
-
 ## Embedding Providers
 
 ### SentenceTransformers (Default)
@@ -301,84 +255,15 @@ scope data.csv -e jina
 
 **Performance**: JINA (optimized) detects 10% more segments and 13% more topics than SentenceTransformers, but takes 3.3x longer. Recommended for quality-critical applications.
 
-## Evaluation
-
-Benchmark different embedding providers and configurations:
-
-```bash
-# Run evaluation
-python evaluate.py test_conversation.csv -n "my_baseline" -e sentence-transformers
-
-# Compare runs
-python evaluate.py --compare baseline_1 baseline_2
-```
-
-Tracks performance (execution time, memory, cache efficiency) and quality metrics (segments detected, coverage, topic distribution). Results saved to `results/evaluation/<run_name>/` with JSON metrics and human-readable summaries.
-
-## Development
-
-### Running Tests
-
-```bash
-# Install with dev dependencies
-uv sync --extra dev
-
-# Run tests
-uv run pytest tests/ -v
-```
-
-### Code Formatting
-
-```bash
-uv run black scope/
-uv run ruff check scope/
-```
-
-### Type Checking
-
-```bash
-uv run mypy scope/
-```
-
 ## Algorithm
 
-SCOPE uses a Hybrid Cosine-KeyBERT approach with greedy block detection:
+SCOPE uses a Hybrid Cosine-KeyBERT approach:
 
-1. **Preprocessing**: Clean text for frequency counting while preserving original text for embeddings
-2. **Keyword Extraction**: Use KeyBERT to extract relevant keywords from original text (preserves context)
-3. **Embedding Generation**: Generate semantic embeddings for keywords and topics using SentenceTransformers or Jina AI
-4. **Similarity Calculation**: Calculate cosine similarity between keyword and topic embeddings
-5. **Probability Weighting**: Combine similarity × KeyBERT relevance × word frequency, then apply softmax normalization
-6. **Hourly Aggregation**: Group messages by user and hour with probability scores
-7. **Block Detection**: Find contiguous hours exceeding threshold using greedy approach
-8. **Segment Processing**: Format results with timestamps and message aggregation
-
-### Key Innovation: Dual Text Processing
-
-SCOPE uses a novel dual-text approach that improves embedding quality:
-
-- **Original Text**: Used for KeyBERT keyword extraction and embeddings (preserves context and stop words)
-- **Cleaned Text**: Used for word frequency counting (removes noise)
-
-This approach produces higher-quality semantic embeddings compared to using preprocessed text alone, as transformer models perform better with full contextual information.
-
-**Example:**
-```
-Original: "I love machine learning and neural networks"
-  → KeyBERT extracts: [('machine learning', 0.75), ('neural networks', 0.68)]
-  → High-quality contextual embeddings
-
-Cleaned: ['love', 'machine', 'learning', 'neural', 'network']
-  → Used for frequency weighting only
-```
-
-## Performance
-
-Typical performance on a standard machine:
-
-- **May 2018 (31 days)**: ~8-10 seconds
-- **~155,000 messages**: ~5,245 segments detected
-- **Memory**: ~500MB RAM
+1. **Dual Text Processing**: Preserves original text for embeddings while using cleaned text for frequency weighting
+2. **Keyword Extraction**: KeyBERT extracts relevant keywords from original text
+3. **Semantic Similarity**: Generates embeddings and calculates cosine similarity between keywords and topics
+4. **Probability Scoring**: Combines similarity × KeyBERT relevance × word frequency with softmax normalization
+5. **Block Detection**: Identifies contiguous hourly segments exceeding probability threshold
 
 ## Troubleshooting
 
@@ -398,43 +283,6 @@ The package automatically downloads required NLTK data (wordnet, omw-1.4) on fir
 - Check rate limits (500 RPM for standard keys)
 - Use smaller date ranges for large datasets
 
-## Implementation Notes
+## Additional Resources
 
-This codebase implements the **Hybrid Cosine-KeyBERT** approach from the research notebooks. The LDA-based approach has been completely removed in favor of this semantic similarity method for the following reasons:
-
-**Advantages of Cosine-KeyBERT:**
-- Better semantic understanding of topics
-- More accurate keyword identification
-- Works well with small amounts of data per user
-- Leverages state-of-the-art transformer embeddings
-- Flexible embedding providers (local or API-based)
-
-**Trade-offs:**
-- Slightly slower than LDA (embedding-based vs statistical)
-- Requires more memory for embedding cache
-- Depends on embedding model quality
-
-For implementation details, see `IMPLEMENTATION_SUMMARY.md`.
-
-## Related Documentation
-
-- `IMPLEMENTATION_SUMMARY.md` - Detailed technical implementation notes
-- `MIGRATION_GUIDE.md` - Migration from LDA to Cosine-KeyBERT
-- `SCOPE.pdf` - Research paper and methodology
-- Jupyter notebooks in root directory - Experimental implementations
-
-## License
-
-MIT
-
-## Citation
-
-If you use SCOPE in your research, please cite:
-
-```
-@software{scope2024,
-  title={SCOPE: Segmented Contiguous Probability Extraction},
-  year={2024},
-  version={0.1.0}
-}
-```
+See `SCOPE.pdf` for detailed research paper and methodology.
