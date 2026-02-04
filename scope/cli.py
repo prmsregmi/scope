@@ -7,6 +7,7 @@ from datetime import datetime, timedelta
 from typing import Any, Optional
 
 import pandas as pd
+from tqdm import tqdm
 
 from scope.analysis import ContiguousBlockFinder, SegmentProcessor
 from scope.config import ScopeConfig
@@ -234,7 +235,7 @@ def organize_data_by_user_and_hour(
         user_hourly_messages[user] = [[] for _ in range(num_hours)]
 
     # Process each message
-    for _, row in df.iterrows():
+    for _, row in tqdm(df.iterrows(), total=len(df), desc="Preprocessing messages", unit="msg"):
         user = row["Sender"]
         timestamp = row["Timestamp"]
         text = str(row["Text"])

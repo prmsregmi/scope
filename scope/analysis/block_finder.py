@@ -3,6 +3,8 @@
 import copy
 from typing import Optional
 
+from tqdm import tqdm
+
 from scope.modeling.probability import ProbabilityCalculator
 
 
@@ -156,19 +158,22 @@ class ContiguousBlockFinder:
             Nested dictionary: {user: {topic: [block1, block2, ...]}}
         """
         results = {}
+        total_operations = len(user_hourly_data) * len(topics)
 
-        for user, hourly_texts in user_hourly_data.items():
-            hourly_original_texts = user_hourly_original[user]
-            user_results = {}
+        with tqdm(total=total_operations, desc="Finding contiguous blocks", unit="user-topic") as pbar:
+            for user, hourly_texts in user_hourly_data.items():
+                hourly_original_texts = user_hourly_original[user]
+                user_results = {}
 
-            for topic_idx, topic_name in enumerate(topics):
-                blocks = self.find_blocks_for_user(
-                    hourly_texts,
-                    hourly_original_texts,
-                    topic_idx,
-                )
-                user_results[topic_name] = blocks
+                for topic_idx, topic_name in enumerate(topics):
+                    blocks = self.find_blocks_for_user(
+                        hourly_texts,
+                        hourly_original_texts,
+                        topic_idx,
+                    )
+                    user_results[topic_name] = blocks
+                    pbar.update(1)
 
-            results[user] = user_results
+                results[user] = user_results
 
         return results

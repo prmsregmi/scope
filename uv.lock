@@ -1360,6 +1360,7 @@ dependencies = [
     { name = "python-dotenv" },
     { name = "scikit-learn" },
     { name = "spacy" },
+    { name = "tqdm" },
 ]
 
 [package.optional-dependencies]
@@ -1403,6 +1404,7 @@ requires-dist = [
     { name = "sentence-transformers", marker = "extra == 'sentence-transformers'", specifier = ">=2.2.0" },
     { name = "spacy", specifier = ">=3.7.0" },
     { name = "torch", marker = "extra == 'sentence-transformers'", specifier = ">=2.0.0" },
+    { name = "tqdm", specifier = ">=4.65.0" },
 ]
 provides-extras = ["postgres", "sentence-transformers", "jina", "dev", "all"]
 

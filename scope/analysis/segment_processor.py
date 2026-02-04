@@ -3,6 +3,8 @@
 from datetime import datetime, timedelta
 from typing import Any
 
+from tqdm import tqdm
+
 from scope.modeling.probability import ProbabilityCalculator
 
 
@@ -39,51 +41,60 @@ class SegmentProcessor:
         """
         all_segments = []
 
-        for user, topic_blocks in user_blocks.items():
-            for topic, blocks in topic_blocks.items():
-                for block in blocks:
-                    if not block:
-                        continue
+        # Count total blocks for progress bar
+        total_blocks = sum(
+            len(blocks)
+            for topic_blocks in user_blocks.values()
+            for blocks in topic_blocks.values()
+        )
 
-                    # Get time range
-                    start_date, start_time, end_date, end_time, duration = (
-                        self._calculate_time_range(
+        with tqdm(total=total_blocks, desc="Processing segments", unit="segment") as pbar:
+            for user, topic_blocks in user_blocks.items():
+                for topic, blocks in topic_blocks.items():
+                    for block in blocks:
+                        pbar.update(1)
+                        if not block:
+                            continue
+
+                        # Get time range
+                        start_date, start_time, end_date, end_time, duration = (
+                            self._calculate_time_range(
+                                block, user, user_full_messages
+                            )
+                        )
+
+                        # Calculate probability for this segment
+                        original_text = self._get_original_text_for_block(
+                            block, user, user_hourly_original
+                        )
+                        word_list = self._get_word_list_for_block(
+                            block, user, user_hourly_data
+                        )
+                        probabilities = prob_calc.calculate_probability(
+                            original_text, word_list
+                        )
+                        topic_idx = list(topic_blocks.keys()).index(topic)
+                        probability = probabilities[topic_idx]
+
+                        # Aggregate chat messages
+                        chat_summary = self._aggregate_messages(
                             block, user, user_full_messages
                         )
-                    )
 
-                    # Calculate probability for this segment
-                    original_text = self._get_original_text_for_block(
-                        block, user, user_hourly_original
-                    )
-                    word_list = self._get_word_list_for_block(
-                        block, user, user_hourly_data
-                    )
-                    probabilities = prob_calc.calculate_probability(
-                        original_text, word_list
-                    )
-                    topic_idx = list(topic_blocks.keys()).index(topic)
-                    probability = probabilities[topic_idx]
+                        # Create segment record
+                        segment = {
+                            "User": user,
+                            "Start Date": start_date,
+                            "Start Time": start_time,
+                            "End Date": end_date,
+                            "End Time": end_time,
+                            "Time Duration": str(duration),
+                            "Topic": topic,
+                            "Probability": str(probability),
+                            "Chat Summary": chat_summary,
+                        }
 
-                    # Aggregate chat messages
-                    chat_summary = self._aggregate_messages(
-                        block, user, user_full_messages
-                    )
-
-                    # Create segment record
-                    segment = {
-                        "User": user,
-                        "Start Date": start_date,
-                        "Start Time": start_time,
-                        "End Date": end_date,
-                        "End Time": end_time,
-                        "Time Duration": str(duration),
-                        "Topic": topic,
-                        "Probability": str(probability),
-                        "Chat Summary": chat_summary,
-                    }
-
-                    all_segments.append(segment)
+                        all_segments.append(segment)
 
         return all_segments
 
