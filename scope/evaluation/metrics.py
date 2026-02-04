@@ -88,6 +88,30 @@ class QualityMetrics:
 
 
 @dataclass
+class AccuracyMetrics:
+    """Accuracy metrics comparing predictions to ground truth labels."""
+
+    total_samples: int  # Total number of labeled samples
+    correct_predictions: int  # Number of correct predictions
+    accuracy: float  # Overall accuracy (0-1)
+
+    # Per-topic metrics
+    per_topic_accuracy: dict[str, float] = field(default_factory=dict)  # Topic -> accuracy
+    confusion_matrix: dict[str, dict[str, int]] = field(default_factory=dict)  # True -> Predicted -> count
+
+    def to_dict(self) -> dict[str, Any]:
+        """Convert to dictionary."""
+        return {
+            "total_samples": self.total_samples,
+            "correct_predictions": self.correct_predictions,
+            "accuracy": round(self.accuracy, 4),
+            "accuracy_percentage": round(self.accuracy * 100, 2),
+            "per_topic_accuracy": {k: round(v, 4) for k, v in self.per_topic_accuracy.items()},
+            "confusion_matrix": self.confusion_matrix,
+        }
+
+
+@dataclass
 class EvaluationMetrics:
     """Complete evaluation metrics for a SCOPE run."""
 
@@ -98,16 +122,20 @@ class EvaluationMetrics:
     quality: QualityMetrics
 
     timestamp: str = ""  # Timestamp of the evaluation
+    accuracy: AccuracyMetrics | None = None  # Optional accuracy metrics
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary."""
-        return {
+        result = {
             "run_name": self.run_name,
             "timestamp": self.timestamp,
             "config": self.config,
             "performance": self.performance.to_dict(),
             "quality": self.quality.to_dict(),
         }
+        if self.accuracy:
+            result["accuracy"] = self.accuracy.to_dict()
+        return result
 
     def summary_str(self) -> str:
         """Generate a human-readable summary string."""
@@ -157,6 +185,23 @@ class EvaluationMetrics:
 
         for topic, count in sorted_topics:
             lines.append(f"  {topic}: {count} segments")
+
+        # Add accuracy section if available
+        if self.accuracy:
+            lines.append("")
+            lines.append("ACCURACY (vs Ground Truth):")
+            lines.append(f"  Overall Accuracy: {self.accuracy.accuracy * 100:.2f}% ({self.accuracy.correct_predictions}/{self.accuracy.total_samples})")
+
+            if self.accuracy.per_topic_accuracy:
+                lines.append("")
+                lines.append("  Per-Topic Accuracy:")
+                sorted_acc = sorted(
+                    self.accuracy.per_topic_accuracy.items(),
+                    key=lambda x: x[1],
+                    reverse=True
+                )
+                for topic, acc in sorted_acc:
+                    lines.append(f"    {topic}: {acc * 100:.2f}%")
 
         lines.append("")
         lines.append("=" * 70)

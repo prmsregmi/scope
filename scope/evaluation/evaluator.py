@@ -17,7 +17,7 @@ from scope.modeling import ProbabilityCalculator
 from scope.preprocessing import TextCleaner
 from scope.utils import get_logger, setup_logging
 
-from .metrics import EvaluationMetrics, PerformanceMetrics, QualityMetrics
+from .metrics import AccuracyMetrics, EvaluationMetrics, PerformanceMetrics, QualityMetrics
 
 
 class ScopeEvaluator:
@@ -37,12 +37,14 @@ class ScopeEvaluator:
         self,
         config: ScopeConfig,
         run_name: Optional[str] = None,
+        labeled_data_path: Optional[str] = None,
     ) -> EvaluationMetrics:
         """Run SCOPE analysis and collect evaluation metrics.
 
         Args:
             config: SCOPE configuration
             run_name: Optional name for this evaluation run
+            labeled_data_path: Optional path to labeled test data CSV for accuracy calculation
 
         Returns:
             Evaluation metrics
@@ -184,6 +186,12 @@ class ScopeEvaluator:
             # Quality metrics
             quality = self._calculate_quality_metrics(segments, len(df), date_list)
 
+            # Accuracy metrics (if labeled data provided)
+            accuracy = None
+            if labeled_data_path:
+                self.logger.info("Calculating accuracy metrics...")
+                accuracy = self._calculate_accuracy_metrics(labeled_data_path)
+
             # Create evaluation metrics
             metrics = EvaluationMetrics(
                 run_name=run_name,
@@ -200,6 +208,7 @@ class ScopeEvaluator:
                 performance=performance,
                 quality=quality,
                 timestamp=datetime.now().isoformat(),
+                accuracy=accuracy,
             )
 
             # Save results
@@ -327,6 +336,61 @@ class ScopeEvaluator:
             min_segment_duration_hours=min(durations) if durations else 0.0,
             max_segment_duration_hours=max(durations) if durations else 0.0,
         )
+
+    def _calculate_accuracy_metrics(self, labeled_data_path: str) -> AccuracyMetrics | None:
+        """Calculate accuracy metrics from labeled test data.
+
+        Args:
+            labeled_data_path: Path to CSV file with columns: Topic, Human Label, Match / Mismatch
+
+        Returns:
+            AccuracyMetrics or None if file doesn't exist
+        """
+        import os
+        if not os.path.exists(labeled_data_path):
+            self.logger.warning(f"Labeled data not found: {labeled_data_path}")
+            return None
+
+        try:
+            df = pd.read_csv(labeled_data_path)
+
+            # Validate required columns
+            required_cols = ["Topic", "Human Label"]
+            if not all(col in df.columns for col in required_cols):
+                self.logger.warning(f"Labeled data missing required columns: {required_cols}")
+                return None
+
+            total_samples = len(df)
+            correct_predictions = (df["Topic"] == df["Human Label"]).sum()
+            accuracy = correct_predictions / total_samples if total_samples > 0 else 0.0
+
+            # Calculate per-topic accuracy
+            per_topic_accuracy = {}
+            for topic in df["Human Label"].unique():
+                topic_samples = df[df["Human Label"] == topic]
+                topic_correct = (topic_samples["Topic"] == topic_samples["Human Label"]).sum()
+                per_topic_accuracy[topic] = topic_correct / len(topic_samples) if len(topic_samples) > 0 else 0.0
+
+            # Build confusion matrix
+            confusion_matrix = {}
+            for true_label in df["Human Label"].unique():
+                confusion_matrix[true_label] = {}
+                for pred_label in df["Topic"].unique():
+                    count = len(df[(df["Human Label"] == true_label) & (df["Topic"] == pred_label)])
+                    if count > 0:
+                        confusion_matrix[true_label][pred_label] = count
+
+            return AccuracyMetrics(
+                total_samples=total_samples,
+                correct_predictions=int(correct_predictions),
+                accuracy=accuracy,
+                per_topic_accuracy=per_topic_accuracy,
+                confusion_matrix=confusion_matrix,
+            )
+
+        except Exception as e:
+            self.logger.error(f"Error calculating accuracy metrics: {e}")
+            return None
 
     def _save_results(self, metrics: EvaluationMetrics, segments: list[dict]) -> None:
         """Save evaluation results to files."""

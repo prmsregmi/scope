@@ -11,6 +11,7 @@ import pandas as pd
 from scope.analysis import ContiguousBlockFinder, SegmentProcessor
 from scope.config import ScopeConfig
 from scope.embeddings import get_embedding_provider
+from scope.evaluation import ScopeEvaluator
 from scope.io import DatasetLoader, ResultWriter
 from scope.modeling import ProbabilityCalculator
 from scope.preprocessing import TextCleaner
@@ -163,6 +164,30 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument(
         "--postgres-password",
         help="PostgreSQL password",
+    )
+
+    # Evaluation options
+    parser.add_argument(
+        "--evaluate",
+        action="store_true",
+        help="Run in evaluation mode (saves detailed metrics)",
+    )
+
+    parser.add_argument(
+        "--run-name",
+        help="Name for this evaluation run (required with --evaluate)",
+    )
+
+    parser.add_argument(
+        "--labeled-data",
+        help="Path to labeled test data CSV for accuracy calculation",
+    )
+
+    parser.add_argument(
+        "--compare-runs",
+        nargs="+",
+        metavar="RUN_NAME",
+        help="Compare multiple evaluation runs (e.g., --compare-runs run1 run2 run3)",
     )
 
     # Version
@@ -432,9 +457,55 @@ def run_analysis(config: ScopeConfig) -> None:
                 pass
 
 
+def run_evaluation(config: ScopeConfig, run_name: str, labeled_data_path: Optional[str] = None) -> None:
+    """Run SCOPE in evaluation mode.
+
+    Args:
+        config: SCOPE configuration
+        run_name: Name for this evaluation run
+        labeled_data_path: Optional path to labeled test data for accuracy
+    """
+    logger = setup_logging(config.verbose)
+
+    evaluator = ScopeEvaluator(output_dir="results/evaluation")
+
+    logger.info(f"Running evaluation: {run_name}")
+
+    metrics = evaluator.evaluate(
+        config=config,
+        run_name=run_name,
+        labeled_data_path=labeled_data_path,
+    )
+
+    # Print summary
+    print("\n" + metrics.summary_str())
+    print(f"\nResults saved to: results/evaluation/{run_name}/")
+
+
+def compare_evaluation_runs(run_names: list[str]) -> None:
+    """Compare multiple evaluation runs.
+
+    Args:
+        run_names: List of run names to compare
+    """
+    evaluator = ScopeEvaluator(output_dir="results/evaluation")
+
+    print(f"\nComparing {len(run_names)} evaluation runs...")
+
+    report = evaluator.compare_runs(run_names, output_file="comparison.txt")
+
+    print("\n" + report)
+    print("\nComparison saved to: results/evaluation/comparison.txt")
+
+
 def main() -> None:
     """Main entry point for CLI."""
     args = parse_arguments()
+
+    # Handle comparison mode
+    if args.compare_runs:
+        compare_evaluation_runs(args.compare_runs)
+        return
 
     # Build configuration from environment variables and defaults
     config = ScopeConfig.from_env(dataset_path=args.dataset_path)
@@ -470,8 +541,16 @@ def main() -> None:
     # Merge CLI args (only non-None values override)
     config.merge_with_args(**cli_args)
 
-    # Run analysis
-    run_analysis(config)
+    # Handle evaluation mode
+    if args.evaluate:
+        if not args.run_name:
+            print("Error: --run-name is required when using --evaluate", file=sys.stderr)
+            sys.exit(1)
+
+        run_evaluation(config, args.run_name, args.labeled_data)
+    else:
+        # Run normal analysis
+        run_analysis(config)
 
 
 if __name__ == "__main__":

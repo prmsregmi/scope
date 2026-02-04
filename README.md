@@ -312,6 +312,24 @@ SCOPE uses a Hybrid Cosine-KeyBERT approach:
 4. **Probability Scoring**: Combines similarity × KeyBERT relevance × word frequency with softmax normalization
 5. **Block Detection**: Identifies contiguous hourly segments exceeding probability threshold
 
+## Evaluation
+
+Run SCOPE in evaluation mode to collect detailed performance metrics and accuracy against labeled ground truth:
+
+```bash
+# Run evaluation with accuracy calculation
+uv run scope data/Conversation.csv \
+  --evaluate \
+  --run-name "experiment_name" \
+  --labeled-data data/labeled_test_data.csv \
+  -t 0.07
+
+# Compare multiple runs
+uv run scope --compare-runs run1 run2 run3
+```
+
+Results saved to `results/evaluation/<run_name>/` with metrics.json, summary.txt, and per-topic accuracy.
+
 ## Troubleshooting
 
 ### spaCy Model Not Found
