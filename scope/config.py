@@ -55,6 +55,9 @@ class ScopeConfig:
     enable_lemmatization: bool = True
     verbose: bool = False
     include_summary: bool = True
+    # Evaluation
+    enable_evaluation: bool = True
+    labeled_test_data: Optional[str] = None
     # PostgreSQL vector storage
     use_postgres: bool = False
     postgres_host: Optional[str] = None
@@ -119,6 +122,9 @@ class ScopeConfig:
             enable_spell_check=os.getenv("SCOPE_SPELL_CHECK", "true").lower() == "true",
             enable_lemmatization=os.getenv("SCOPE_LEMMATIZE", "true").lower() == "true",
             output_path=os.getenv("SCOPE_OUTPUT_PATH", "results/scope_results.csv"),
+            # Evaluation configuration
+            enable_evaluation=os.getenv("SCOPE_ENABLE_EVALUATION", "true").lower() == "true",
+            labeled_test_data=os.getenv("SCOPE_LABELED_TEST_DATA", "data/labeled_test_data_clean.csv"),
             # PostgreSQL configuration
             use_postgres=os.getenv("SCOPE_USE_POSTGRES", "false").lower() == "true",
             postgres_host=os.getenv("DATABASE_HOST"),

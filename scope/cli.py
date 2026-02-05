@@ -169,19 +169,14 @@ def parse_arguments() -> argparse.Namespace:
 
     # Evaluation options
     parser.add_argument(
-        "--evaluate",
+        "--no-evaluation",
         action="store_true",
-        help="Run in evaluation mode (saves detailed metrics)",
+        help="Disable evaluation mode (no performance/accuracy metrics)",
     )
 
     parser.add_argument(
         "--run-name",
-        help="Name for this evaluation run (required with --evaluate)",
-    )
-
-    parser.add_argument(
-        "--labeled-data",
-        help="Path to labeled test data CSV for accuracy calculation",
+        help="Name for this evaluation run (default: auto-generated from config)",
     )
 
     parser.add_argument(
@@ -525,6 +520,8 @@ def main() -> None:
         "enable_lemmatization": args.enable_lemmatization if hasattr(args, "enable_lemmatization") else None,
         "verbose": args.verbose,
         "include_summary": args.include_summary if hasattr(args, "include_summary") else None,
+        # Evaluation - disable if --no-evaluation flag is set
+        "enable_evaluation": False if args.no_evaluation else None,
         # For boolean flags (store_true), only override if explicitly True
         # Otherwise, keep the env var value to avoid overriding True with False
         "use_postgres": args.use_postgres if args.use_postgres else None,
@@ -542,15 +539,18 @@ def main() -> None:
     # Merge CLI args (only non-None values override)
     config.merge_with_args(**cli_args)
 
-    # Handle evaluation mode
-    if args.evaluate:
-        if not args.run_name:
-            print("Error: --run-name is required when using --evaluate", file=sys.stderr)
-            sys.exit(1)
+    # Handle evaluation mode (enabled by default)
+    if config.enable_evaluation:
+        # Generate run name if not provided
+        run_name = args.run_name
+        if not run_name:
+            from datetime import datetime
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            run_name = f"{config.embedding_provider}_t{config.probability_threshold}_{timestamp}"
 
-        run_evaluation(config, args.run_name, args.labeled_data)
+        run_evaluation(config, run_name, config.labeled_test_data)
     else:
-        # Run normal analysis
+        # Run normal analysis (no evaluation)
         run_analysis(config)
 
 

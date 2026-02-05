@@ -314,21 +314,23 @@ SCOPE uses a Hybrid Cosine-KeyBERT approach:
 
 ## Evaluation
 
-Run SCOPE in evaluation mode to collect detailed performance metrics and accuracy against labeled ground truth:
+Evaluation runs by default, collecting performance metrics (speed, memory) and accuracy against labeled test data using your current config (model, threshold, preprocessing). Each experiment gets comprehensive metrics:
 
 ```bash
-# Run evaluation with accuracy calculation
-uv run scope data/Conversation.csv \
-  --evaluate \
-  --run-name "experiment_name" \
-  --labeled-data data/labeled_test_data.csv \
-  -t 0.07
+# Run with auto-generated name
+uv run scope data/Conversation.csv -e jina -t 0.08
 
-# Compare multiple runs
-uv run scope --compare-runs run1 run2 run3
+# Or specify run name
+uv run scope data/Conversation.csv --run-name "jina_t008" -e jina -t 0.08
+
+# Disable evaluation (just get CSV output)
+uv run scope data/Conversation.csv --no-evaluation -o output.csv
+
+# Compare experiments
+uv run scope --compare-runs jina_t008 st_t007
 ```
 
-Results saved to `results/evaluation/<run_name>/` with metrics.json, summary.txt, and per-topic accuracy.
+Results: `results/evaluation/<run_name>/` with metrics (accuracy, precision, recall, F1), performance stats, and confusion matrix. Configure test data path in `.env` (`SCOPE_LABELED_TEST_DATA`).
 
 ## Troubleshooting
 

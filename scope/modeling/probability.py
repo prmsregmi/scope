@@ -68,3 +68,26 @@ class ProbabilityCalculator:
             Dictionary with cache sizes
         """
         return self.keybert_calc.cache_size()
+
+    def predict_topic(self, text: str, cleaned_words: Optional[list[str]] = None) -> str:
+        """Predict the most likely topic for given text.
+
+        Args:
+            text: Original text to classify
+            cleaned_words: Optional preprocessed word list (if not provided, uses empty list)
+
+        Returns:
+            Predicted topic name
+        """
+        # If no cleaned words provided, use empty list (relies on original text for embeddings)
+        if cleaned_words is None:
+            cleaned_words = []
+
+        # Calculate probabilities for all topics
+        probabilities = self.calculate_probability(text, cleaned_words)
+
+        # Get topic with highest probability
+        topics = self.keybert_calc.topics
+        max_idx = probabilities.index(max(probabilities))
+
+        return topics[max_idx]

@@ -95,8 +95,16 @@ class AccuracyMetrics:
     correct_predictions: int  # Number of correct predictions
     accuracy: float  # Overall accuracy (0-1)
 
+    # Classification metrics
+    precision: float = 0.0  # Weighted precision
+    recall: float = 0.0  # Weighted recall
+    f1_score: float = 0.0  # Weighted F1 score
+
     # Per-topic metrics
     per_topic_accuracy: dict[str, float] = field(default_factory=dict)  # Topic -> accuracy
+    per_topic_precision: dict[str, float] = field(default_factory=dict)  # Topic -> precision
+    per_topic_recall: dict[str, float] = field(default_factory=dict)  # Topic -> recall
+    per_topic_f1: dict[str, float] = field(default_factory=dict)  # Topic -> F1
     confusion_matrix: dict[str, dict[str, int]] = field(default_factory=dict)  # True -> Predicted -> count
 
     def to_dict(self) -> dict[str, Any]:
@@ -106,7 +114,13 @@ class AccuracyMetrics:
             "correct_predictions": self.correct_predictions,
             "accuracy": round(self.accuracy, 4),
             "accuracy_percentage": round(self.accuracy * 100, 2),
+            "precision": round(self.precision, 4),
+            "recall": round(self.recall, 4),
+            "f1_score": round(self.f1_score, 4),
             "per_topic_accuracy": {k: round(v, 4) for k, v in self.per_topic_accuracy.items()},
+            "per_topic_precision": {k: round(v, 4) for k, v in self.per_topic_precision.items()},
+            "per_topic_recall": {k: round(v, 4) for k, v in self.per_topic_recall.items()},
+            "per_topic_f1": {k: round(v, 4) for k, v in self.per_topic_f1.items()},
             "confusion_matrix": self.confusion_matrix,
         }
 
@@ -191,17 +205,23 @@ class EvaluationMetrics:
             lines.append("")
             lines.append("ACCURACY (vs Ground Truth):")
             lines.append(f"  Overall Accuracy: {self.accuracy.accuracy * 100:.2f}% ({self.accuracy.correct_predictions}/{self.accuracy.total_samples})")
+            lines.append(f"  Precision: {self.accuracy.precision:.4f}")
+            lines.append(f"  Recall: {self.accuracy.recall:.4f}")
+            lines.append(f"  F1 Score: {self.accuracy.f1_score:.4f}")
 
-            if self.accuracy.per_topic_accuracy:
+            if self.accuracy.per_topic_f1:
                 lines.append("")
-                lines.append("  Per-Topic Accuracy:")
-                sorted_acc = sorted(
-                    self.accuracy.per_topic_accuracy.items(),
+                lines.append("  Per-Topic Metrics (Top 10 by F1):")
+                sorted_topics = sorted(
+                    self.accuracy.per_topic_f1.items(),
                     key=lambda x: x[1],
                     reverse=True
-                )
-                for topic, acc in sorted_acc:
-                    lines.append(f"    {topic}: {acc * 100:.2f}%")
+                )[:10]
+                for topic, f1 in sorted_topics:
+                    acc = self.accuracy.per_topic_accuracy.get(topic, 0)
+                    prec = self.accuracy.per_topic_precision.get(topic, 0)
+                    rec = self.accuracy.per_topic_recall.get(topic, 0)
+                    lines.append(f"    {topic}: Acc={acc*100:.1f}% P={prec:.3f} R={rec:.3f} F1={f1:.3f}")
 
         lines.append("")
         lines.append("=" * 70)

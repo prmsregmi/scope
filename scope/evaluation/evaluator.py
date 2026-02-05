@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 import pandas as pd
+from tqdm import tqdm
 
 from scope.analysis import ContiguousBlockFinder, SegmentProcessor
 from scope.config import ScopeConfig
@@ -189,8 +190,8 @@ class ScopeEvaluator:
             # Accuracy metrics (if labeled data provided)
             accuracy = None
             if labeled_data_path:
-                self.logger.info("Calculating accuracy metrics...")
-                accuracy = self._calculate_accuracy_metrics(labeled_data_path)
+                self.logger.info("Calculating accuracy metrics on test data...")
+                accuracy = self._calculate_accuracy_metrics(labeled_data_path, prob_calc, text_cleaner)
 
             # Create evaluation metrics
             metrics = EvaluationMetrics(
@@ -242,7 +243,7 @@ class ScopeEvaluator:
             user_hourly_original[user] = ["" for _ in range(num_hours)]
             user_hourly_messages[user] = [[] for _ in range(num_hours)]
 
-        for _, row in df.iterrows():
+        for _, row in tqdm(df.iterrows(), total=len(df), desc="Preprocessing messages", unit="msg"):
             user = row["Sender"]
             timestamp = row["Timestamp"]
             text = str(row["Text"])
@@ -337,59 +338,137 @@ class ScopeEvaluator:
             max_segment_duration_hours=max(durations) if durations else 0.0,
         )
 
-    def _calculate_accuracy_metrics(self, labeled_data_path: str) -> AccuracyMetrics | None:
-        """Calculate accuracy metrics from labeled test data.
+    def _calculate_accuracy_metrics(
+        self,
+        labeled_data_path: str,
+        prob_calc: "ProbabilityCalculator",
+        text_cleaner: "TextCleaner",
+    ) -> AccuracyMetrics | None:
+        """Calculate accuracy metrics by running current config on test data.
 
         Args:
-            labeled_data_path: Path to CSV file with columns: Topic, Human Label, Match / Mismatch
+            labeled_data_path: Path to CSV file with columns: Chat Summary, Human Label
+            prob_calc: ProbabilityCalculator with current config (model, threshold, etc.)
+            text_cleaner: TextCleaner with current preprocessing settings
 
         Returns:
             AccuracyMetrics or None if file doesn't exist
         """
         import os
         if not os.path.exists(labeled_data_path):
-            self.logger.warning(f"Labeled data not found: {labeled_data_path}")
+            self.logger.warning(f"Labeled test data not found: {labeled_data_path}")
             return None
 
         try:
+            from sklearn.metrics import precision_score, recall_score, f1_score, confusion_matrix as sk_confusion_matrix
+
             df = pd.read_csv(labeled_data_path)
 
             # Validate required columns
-            required_cols = ["Topic", "Human Label"]
+            required_cols = ["Chat Summary", "Human Label"]
             if not all(col in df.columns for col in required_cols):
                 self.logger.warning(f"Labeled data missing required columns: {required_cols}")
                 return None
 
-            total_samples = len(df)
-            correct_predictions = (df["Topic"] == df["Human Label"]).sum()
+            self.logger.info(f"Running predictions on {len(df)} test samples...")
+
+            # Generate predictions using current config
+            predictions = []
+            ground_truth = []
+
+            for idx, row in df.iterrows():
+                text = str(row["Chat Summary"])
+                true_label = row["Human Label"]
+
+                # Clean text using current config's preprocessing
+                cleaned_words = text_cleaner.clean(text)
+
+                # Predict using current config's model/settings
+                predicted_topic = prob_calc.predict_topic(text, cleaned_words)
+
+                predictions.append(predicted_topic)
+                ground_truth.append(true_label)
+
+                if (idx + 1) % 50 == 0:
+                    self.logger.debug(f"  Processed {idx + 1}/{len(df)} test samples")
+
+            # Calculate overall metrics
+            total_samples = len(ground_truth)
+            correct_predictions = sum(1 for p, g in zip(predictions, ground_truth) if p == g)
             accuracy = correct_predictions / total_samples if total_samples > 0 else 0.0
 
-            # Calculate per-topic accuracy
+            # Get unique labels (union of predictions and ground truth)
+            all_labels = sorted(set(predictions + ground_truth))
+
+            # Calculate weighted precision, recall, F1
+            precision = precision_score(ground_truth, predictions, labels=all_labels, average='weighted', zero_division=0)
+            recall = recall_score(ground_truth, predictions, labels=all_labels, average='weighted', zero_division=0)
+            f1 = f1_score(ground_truth, predictions, labels=all_labels, average='weighted', zero_division=0)
+
+            # Calculate per-topic metrics
             per_topic_accuracy = {}
-            for topic in df["Human Label"].unique():
-                topic_samples = df[df["Human Label"] == topic]
-                topic_correct = (topic_samples["Topic"] == topic_samples["Human Label"]).sum()
-                per_topic_accuracy[topic] = topic_correct / len(topic_samples) if len(topic_samples) > 0 else 0.0
+            per_topic_precision = {}
+            per_topic_recall = {}
+            per_topic_f1 = {}
+
+            for label in all_labels:
+                # Accuracy
+                label_mask = [g == label for g in ground_truth]
+                if sum(label_mask) > 0:
+                    label_correct = sum(1 for i, m in enumerate(label_mask) if m and predictions[i] == ground_truth[i])
+                    per_topic_accuracy[label] = label_correct / sum(label_mask)
+                else:
+                    per_topic_accuracy[label] = 0.0
+
+                # Precision, Recall, F1
+                try:
+                    prec = precision_score(ground_truth, predictions, labels=[label], average='micro', zero_division=0)
+                    rec = recall_score(ground_truth, predictions, labels=[label], average='micro', zero_division=0)
+                    f1_val = f1_score(ground_truth, predictions, labels=[label], average='micro', zero_division=0)
+
+                    per_topic_precision[label] = prec
+                    per_topic_recall[label] = rec
+                    per_topic_f1[label] = f1_val
+                except:
+                    per_topic_precision[label] = 0.0
+                    per_topic_recall[label] = 0.0
+                    per_topic_f1[label] = 0.0
 
             # Build confusion matrix
-            confusion_matrix = {}
-            for true_label in df["Human Label"].unique():
-                confusion_matrix[true_label] = {}
-                for pred_label in df["Topic"].unique():
-                    count = len(df[(df["Human Label"] == true_label) & (df["Topic"] == pred_label)])
+            conf_matrix = {}
+            sk_conf = sk_confusion_matrix(ground_truth, predictions, labels=all_labels)
+
+            for i, true_label in enumerate(all_labels):
+                conf_matrix[true_label] = {}
+                for j, pred_label in enumerate(all_labels):
+                    count = int(sk_conf[i][j])
                     if count > 0:
-                        confusion_matrix[true_label][pred_label] = count
+                        conf_matrix[true_label][pred_label] = count
+
+            self.logger.info(f"Accuracy: {accuracy * 100:.2f}% ({correct_predictions}/{total_samples})")
 
             return AccuracyMetrics(
                 total_samples=total_samples,
-                correct_predictions=int(correct_predictions),
+                correct_predictions=correct_predictions,
                 accuracy=accuracy,
+                precision=precision,
+                recall=recall,
+                f1_score=f1,
                 per_topic_accuracy=per_topic_accuracy,
-                confusion_matrix=confusion_matrix,
+                per_topic_precision=per_topic_precision,
+                per_topic_recall=per_topic_recall,
+                per_topic_f1=per_topic_f1,
+                confusion_matrix=conf_matrix,
             )
 
+        except ImportError:
+            self.logger.error("scikit-learn required for accuracy metrics. Install with: pip install scikit-learn")
+            return None
         except Exception as e:
             self.logger.error(f"Error calculating accuracy metrics: {e}")
+            if hasattr(self, 'verbose') or True:  # Show traceback for debugging
+                import traceback
+                traceback.print_exc()
             return None
 
     def _save_results(self, metrics: EvaluationMetrics, segments: list[dict]) -> None:
