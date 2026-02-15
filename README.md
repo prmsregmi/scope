@@ -2,11 +2,94 @@
 
 **S**egmented **CO**ntiguous **P**robability **E**xtraction
 
-A CLI tool for topic modeling that identifies contiguous time blocks in conversation data related to specific topics using Hybrid Cosine-KeyBERT semantic similarity.
+A CLI tool for topic modeling that identifies contiguous time blocks in conversation data using Hybrid Cosine-KeyBERT semantic similarity.
 
 ## Overview
 
 SCOPE analyzes conversational data to find temporal segments where users are discussing particular subjects. It uses a Hybrid Cosine-KeyBERT approach combining keyword extraction, semantic embeddings, and cosine similarity to calculate topic relevance probabilities, then identifies contiguous hourly blocks that exceed a specified threshold.
+
+---
+
+## Setup
+
+```bash
+./setup.sh
+```
+
+**That's it!** One command installs everything (10-15 minutes):
+- Homebrew (macOS, if needed)
+- uv + Python 3.14
+- PostgreSQL 15 + pgvector
+- All dependencies (~2-3GB)
+- Auto-configured `.env`
+
+> **Note:** For manual installation without using the setup script, see the [**Manual Setup**](#manual-setup) section at the bottom of this document.
+
+---
+
+## Usage
+
+```bash
+# Basic analysis
+uv run scope data/Conversation.csv
+
+# With custom threshold
+uv run scope data/Conversation.csv -t 0.08
+
+# With JINA embeddings (higher quality)
+uv run scope data/Conversation.csv -e jina
+
+# Date range filtering
+uv run scope data/Conversation.csv --start-date 2018-05-01 --end-date 2018-05-31
+
+# Verbose output
+uv run scope data/Conversation.csv -v
+```
+
+**Results**: CSV file at `results/scope_results.csv` with temporal segments and topic probabilities.
+
+---
+
+## Examples
+
+### Example 1: Basic Analysis
+
+```bash
+uv run scope "Chit-Chat Dataset/Conversation.csv"
+```
+
+### Example 2: Custom Topics and Threshold
+
+```bash
+uv run scope conversations.csv \
+  --topics "Politics,Technology,Sports,Education" \
+  --threshold 0.10 \
+  -o filtered_results.csv
+```
+
+### Example 3: Date Range with Jina
+
+```bash
+export JINA_API_KEY=your_key_here
+uv run scope conversations.csv \
+  -e jina \
+  --start-date 2018-05-01 \
+  --end-date 2018-05-31 \
+  -o may_jina_results.csv \
+  -v
+```
+
+> **For a complete list of available CLI arguments, see the [CLI Arguments](#cli-arguments) section below.**
+
+---
+---
+
+# **ADVANCED DOCUMENTATION BELOW**
+
+**The following sections contain advanced configuration, technical details, and manual installation options.**
+
+---
+---
 
 ## Features
 
@@ -14,157 +97,23 @@ SCOPE analyzes conversational data to find temporal segments where users are dis
 - **Dual Text Processing**: Uses original text for embeddings (preserving context) and cleaned text for frequency weighting
 - **Contiguous Block Detection**: Greedy algorithm to find temporal segments of related conversation
 - **Flexible Embedding Support**: Choose between SentenceTransformers (local) or Jina AI (API-based) embeddings
-- **PostgreSQL Vector Storage**: Optional pgvector integration for scalable embedding storage
+- **PostgreSQL Vector Storage**: pgvector integration for scalable embedding storage and 8-10x speedup on cached runs
 - **Comprehensive Preprocessing**: Text cleaning, stop word removal, spell checking, and lemmatization
 - **Configurable**: Environment variables (.env) or command-line arguments
 - **Smart Caching**: Caches embeddings and probability calculations for performance
 - **Fast Performance**: Processes ~155k messages in 8-10 seconds
 
-## Installation
+## Algorithm
 
-### Requirements
+1. **Dual Text Processing**: Preserves original text for embeddings while using cleaned text for frequency weighting
+2. **Keyword Extraction**: KeyBERT extracts relevant keywords from original text
+3. **Semantic Similarity**: Generates embeddings and calculates cosine similarity between keywords and topics
+4. **Probability Scoring**: Combines similarity × KeyBERT relevance × word frequency with softmax normalization
+5. **Block Detection**: Identifies contiguous hourly segments exceeding probability threshold
 
-- Python 3.12+
-- uv (for package management)
+## CLI Arguments
 
-### Quick Install (Recommended)
-
-```bash
-# Install uv if you haven't already
-curl -LsSf https://astral.sh/uv/install.sh | sh
-
-# Clone and install with all features
-cd SCOPE
-uv sync --extra all
-
-# Download required spaCy model
-uv run python -m spacy download en_core_web_sm
-```
-
-### Minimal Install
-
-```bash
-# Install with only sentence-transformers (local embeddings)
-uv sync --extra sentence-transformers
-uv run python -m spacy download en_core_web_sm
-```
-
-For PostgreSQL support, install with `--extra postgres`. Requires pgvector extension: https://github.com/pgvector/pgvector
-
-## Quick Start
-
-### Basic Usage
-
-```bash
-# Analyze a conversation dataset
-scope path/to/conversations.csv
-
-# Specify output file
-scope conversations.csv -o results.csv
-
-# Set custom probability threshold
-scope conversations.csv -t 0.08
-
-# Use verbose output
-scope conversations.csv -v
-```
-
-### Using Jina AI Embeddings
-
-```bash
-# Set your API key
-export JINA_API_KEY=your_api_key_here
-
-# Run analysis with Jina embeddings
-scope conversations.csv -e jina
-```
-
-### Date Range Filtering
-
-```bash
-# Analyze specific date range
-scope conversations.csv \
-  --start-date 2018-05-01 \
-  --end-date 2018-05-31 \
-  -o may_results.csv
-```
-
-### Using PostgreSQL (Optional)
-
-SCOPE supports PostgreSQL with pgvector for persistent embedding storage and faster similarity search. This provides significant speedup on subsequent runs with cached embeddings.
-
-**Setup:**
-
-1. Install PostgreSQL with pgvector extension (if not already installed)
-
-2. Install SCOPE with PostgreSQL support:
-   ```bash
-   uv sync --extra postgres
-   ```
-
-3. Configure database connection in `.env` file:
-   ```bash
-   SCOPE_USE_POSTGRES=true
-   DATABASE_HOST=localhost
-   DATABASE_PORT=5432
-   DATABASE_NAME=scope
-   DATABASE_USER=your_username
-   DATABASE_PASSWORD=your_password
-   ```
-
-4. Run analysis (schema auto-created on first run):
-   ```bash
-   scope conversations.csv
-   ```
-
-**Alternative: Using CLI flags**
-```bash
-scope conversations.csv \
-  --use-postgres \
-  --postgres-host localhost \
-  --postgres-db scope \
-  --postgres-user your_username
-```
-
-**Docker Setup (Recommended for quick start):**
-```bash
-docker run -d --name scope-postgres \
-  -p 5432:5432 \
-  -e POSTGRES_DB=scope \
-  ankane/pgvector
-```
-
-For vector indexing details, advanced configuration, and troubleshooting, see [POSTGRES_SETUP.md](POSTGRES_SETUP.md)
-
-## Configuration
-
-SCOPE can be configured through environment variables (.env file) or command-line arguments. CLI arguments always take precedence over .env values.
-
-### Environment Variables
-
-Create a `.env` file in your project directory:
-
-```bash
-# API Keys
-JINA_API_KEY=your_api_key_here
-
-# Embedding Configuration
-SCOPE_EMBEDDING_PROVIDER=sentence-transformers  # or jina
-SCOPE_EMBEDDING_MODEL=all-MiniLM-L12-v2
-SCOPE_KEYBERT_MODEL=all-MiniLM-L12-v2
-
-# Analysis Settings
-SCOPE_PROBABILITY_THRESHOLD=0.07
-SCOPE_OUTPUT_PATH=results/scope_results.csv
-
-# Preprocessing
-SCOPE_SPELL_CHECK=true
-SCOPE_LEMMATIZE=true
-```
-
-See `.env.example` for a complete list of available configuration options.
-
-## CLI Reference
+CLI arguments override `.env` values:
 
 ```
 scope <dataset_path> [OPTIONS]
@@ -203,6 +152,40 @@ Other:
   --version                Show version
 ```
 
+## Configuration
+
+### Environment Variables
+
+Create a `.env` file (auto-created by `setup.sh`):
+
+```bash
+# API Keys
+JINA_API_KEY=your_api_key_here
+
+# Embedding Configuration
+SCOPE_EMBEDDING_PROVIDER=sentence-transformers  # or jina
+SCOPE_EMBEDDING_MODEL=all-MiniLM-L12-v2
+SCOPE_KEYBERT_MODEL=all-MiniLM-L12-v2
+
+# Analysis Settings
+SCOPE_PROBABILITY_THRESHOLD=0.07
+SCOPE_OUTPUT_PATH=results/scope_results.csv
+
+# Preprocessing
+SCOPE_SPELL_CHECK=true
+SCOPE_LEMMATIZE=true
+
+# PostgreSQL (auto-configured by setup.sh)
+SCOPE_USE_POSTGRES=true
+DATABASE_HOST=localhost
+DATABASE_PORT=5432
+DATABASE_NAME=scope
+DATABASE_USER=your_username
+DATABASE_PASSWORD=
+```
+
+See `.env.example` for all available options.
+
 ## Input Data Format
 
 Your CSV file must contain these columns:
@@ -213,7 +196,7 @@ Your CSV file must contain these columns:
 - **Text**: Message content
 - **Prompt** (optional): Associated prompt or context
 
-Example:
+**Example:**
 
 ```csv
 Chatroom,Sender,Timestamp,Text,Prompt
@@ -237,7 +220,7 @@ SCOPE generates a CSV file with these columns:
 
 ### Summary Statistics
 
-When `--include-summary` is enabled (default), a `.summary.txt` file is generated with:
+When enabled (default), a `.summary.txt` file is generated with:
 
 - Number of extracted segments
 - Average segment length
@@ -245,35 +228,6 @@ When `--include-summary` is enabled (default), a `.summary.txt` file is generate
 - Processing time
 - Average topic relevance score
 - Topic distribution
-
-## Examples
-
-### Example 1: Basic Analysis
-
-```bash
-scope "Chit-Chat Dataset/Conversation.csv"
-```
-
-### Example 2: Custom Topics and Threshold
-
-```bash
-scope conversations.csv \
-  --topics "Politics,Technology,Sports,Education" \
-  --threshold 0.10 \
-  -o filtered_results.csv
-```
-
-### Example 3: Date Range with Jina
-
-```bash
-export JINA_API_KEY=your_key_here
-scope conversations.csv \
-  -e jina \
-  --start-date 2018-05-01 \
-  --end-date 2018-05-31 \
-  -o may_jina_results.csv \
-  -v
-```
 
 ## Embedding Providers
 
@@ -284,7 +238,7 @@ scope conversations.csv \
 - **Model**: `all-MiniLM-L12-v2` (default)
 
 ```bash
-scope data.csv -e sentence-transformers
+uv run scope data.csv -e sentence-transformers
 ```
 
 ### Jina AI
@@ -297,24 +251,14 @@ scope data.csv -e sentence-transformers
 
 ```bash
 export JINA_API_KEY=your_key
-scope data.csv -e jina
+uv run scope data.csv -e jina
 ```
 
 **Performance**: JINA (optimized) detects 10% more segments and 13% more topics than SentenceTransformers, but takes 3.3x longer. Recommended for quality-critical applications.
 
-## Algorithm
-
-SCOPE uses a Hybrid Cosine-KeyBERT approach:
-
-1. **Dual Text Processing**: Preserves original text for embeddings while using cleaned text for frequency weighting
-2. **Keyword Extraction**: KeyBERT extracts relevant keywords from original text
-3. **Semantic Similarity**: Generates embeddings and calculates cosine similarity between keywords and topics
-4. **Probability Scoring**: Combines similarity × KeyBERT relevance × word frequency with softmax normalization
-5. **Block Detection**: Identifies contiguous hourly segments exceeding probability threshold
-
 ## Evaluation
 
-Evaluation runs by default, collecting performance metrics (speed, memory) and accuracy against labeled test data using your current config (model, threshold, preprocessing). Each experiment gets comprehensive metrics:
+Evaluation runs by default, collecting performance metrics (speed, memory) and accuracy against labeled test data.
 
 ```bash
 # Run with auto-generated name
@@ -330,14 +274,16 @@ uv run scope data/Conversation.csv --no-evaluation -o output.csv
 uv run scope --compare-runs jina_t008 st_t007
 ```
 
-Results: `results/evaluation/<run_name>/` with metrics (accuracy, precision, recall, F1), performance stats, and confusion matrix. Configure test data path in `.env` (`SCOPE_LABELED_TEST_DATA`).
+**Results**: `results/evaluation/<run_name>/` with metrics (accuracy, precision, recall, F1), performance stats, and confusion matrix.
+
+Configure test data path in `.env`: `SCOPE_LABELED_TEST_DATA=data/labeled_test_data_clean.csv`
 
 ## Troubleshooting
 
 ### spaCy Model Not Found
 
 ```bash
-python -m spacy download en_core_web_sm
+uv run python -m spacy download en_core_web_sm
 ```
 
 ### NLTK Data Missing
@@ -350,6 +296,142 @@ The package automatically downloads required NLTK data (wordnet, omw-1.4) on fir
 - Check rate limits (500 RPM for standard keys)
 - Use smaller date ranges for large datasets
 
+### PostgreSQL Connection Issues
+
+```bash
+# Test connection
+pg_isready
+
+# Check if PostgreSQL is running
+brew services list | grep postgresql  # macOS
+sudo systemctl status postgresql      # Linux
+
+# Check database exists
+psql -l | grep scope
+```
+
+### Help
+
+```bash
+uv run scope --help
+```
+
 ## Additional Resources
 
 See `SCOPE.pdf` for detailed research paper and methodology.
+
+---
+---
+
+# **MANUAL SETUP**
+
+**The following section provides step-by-step manual installation instructions for users who prefer not to use the automated setup script.**
+
+---
+---
+
+## Alternative Manual Installation
+
+> **⚠️ NOTE: Manual installation is NOT required if you used `./setup.sh` above!**
+
+<details>
+<summary><b>Click here only if you need manual installation steps</b></summary>
+
+### Requirements
+
+- Python 3.12+ (or let uv handle it)
+- uv (for package management)
+- PostgreSQL 15+ with pgvector (optional but recommended)
+
+### Step 1: Install uv
+
+```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh
+export PATH="$HOME/.cargo/bin:$PATH"
+```
+
+### Step 2: Install PostgreSQL with pgvector
+
+**macOS:**
+```bash
+brew install postgresql@15 pgvector
+brew services start postgresql@15
+createdb scope
+psql scope -c "CREATE EXTENSION vector;"
+```
+
+**Linux (Ubuntu/Debian):**
+```bash
+sudo sh -c 'echo "deb http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list'
+wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo apt-key add -
+sudo apt-get update
+sudo apt-get install postgresql-15 postgresql-15-pgvector
+sudo -u postgres createdb scope
+sudo -u postgres psql scope -c "CREATE EXTENSION vector;"
+```
+
+### Step 3: Install SCOPE Dependencies
+
+```bash
+cd SCOPE
+uv sync --python 3.14 --extra all
+uv run python -m spacy download en_core_web_sm
+```
+
+### Step 4: Configure Environment
+
+```bash
+cp .env.example .env
+# Edit .env and set your database credentials and API keys
+```
+
+### Step 5: PostgreSQL Management (Optional)
+
+If you installed PostgreSQL manually, here are useful management commands:
+
+**macOS:**
+```bash
+# Start/stop/restart
+brew services start postgresql@15
+brew services stop postgresql@15
+brew services restart postgresql@15
+
+# Connect
+psql scope
+
+# View stats
+psql scope -c "SELECT COUNT(*) FROM keywords;"
+
+# Clear cache
+psql scope -c "DELETE FROM keywords;"
+```
+
+**Linux:**
+```bash
+# Start/stop/restart
+sudo systemctl start postgresql
+sudo systemctl stop postgresql
+sudo systemctl restart postgresql
+
+# Connect
+psql scope
+
+# View stats
+psql scope -c "SELECT COUNT(*) FROM keywords;"
+
+# Clear cache
+psql scope -c "DELETE FROM keywords;"
+```
+
+**Using CLI flags:**
+```bash
+uv run scope conversations.csv \
+  --use-postgres \
+  --postgres-host localhost \
+  --postgres-db scope \
+  --postgres-user your_username
+```
+
+For vector indexing details and advanced configuration, see [POSTGRES_SETUP.md](POSTGRES_SETUP.md)
+
+</details>
