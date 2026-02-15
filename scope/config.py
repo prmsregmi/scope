@@ -46,12 +46,12 @@ class ScopeConfig:
     embedding_provider: str = "sentence-transformers"
     embedding_model: Optional[str] = None
     jina_api_key: Optional[str] = None
-    jina_parallel_requests: bool = False
+    jina_parallel_requests: bool = True
     jina_max_workers: int = 5
     keybert_model: str = "all-MiniLM-L12-v2"
     start_date: Optional[str] = None
     end_date: Optional[str] = None
-    enable_spell_check: bool = True
+    enable_spell_check: bool = False
     enable_lemmatization: bool = True
     verbose: bool = False
     include_summary: bool = True
@@ -119,8 +119,10 @@ class ScopeConfig:
             probability_threshold=float(os.getenv("SCOPE_PROBABILITY_THRESHOLD", "0.07")),
             keybert_model=os.getenv("SCOPE_KEYBERT_MODEL", "all-MiniLM-L12-v2"),
             jina_api_key=os.getenv("JINA_API_KEY"),
-            enable_spell_check=os.getenv("SCOPE_SPELL_CHECK", "true").lower() == "true",
+            enable_spell_check=os.getenv("SCOPE_SPELL_CHECK", "false").lower() == "true",
             enable_lemmatization=os.getenv("SCOPE_LEMMATIZE", "true").lower() == "true",
+            jina_parallel_requests=os.getenv("JINA_PARALLEL_REQUESTS", "true").lower() == "true",
+            jina_max_workers=int(os.getenv("JINA_MAX_WORKERS", "5")),
             output_path=os.getenv("SCOPE_OUTPUT_PATH", "results/scope_results.csv"),
             # Evaluation configuration
             enable_evaluation=os.getenv("SCOPE_ENABLE_EVALUATION", "true").lower() == "true",

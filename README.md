@@ -17,6 +17,7 @@ SCOPE analyzes conversational data to find temporal segments where users are dis
 ```
 
 **That's it!** One command installs everything (10-15 minutes):
+
 - Homebrew (macOS, if needed)
 - uv + Python 3.14
 - PostgreSQL 15 + pgvector
@@ -30,14 +31,14 @@ SCOPE analyzes conversational data to find temporal segments where users are dis
 ## Usage
 
 ```bash
-# Basic analysis
+# Basic analysis (local embeddings, fast)
 uv run scope data/Conversation.csv
 
-# With custom threshold
-uv run scope data/Conversation.csv -t 0.08
-
-# With JINA embeddings (higher quality)
+# With JINA embeddings (cloud-based, higher quality, parallel by default)
 uv run scope data/Conversation.csv -e jina
+
+# Custom threshold
+uv run scope data/Conversation.csv -t 0.08
 
 # Date range filtering
 uv run scope data/Conversation.csv --start-date 2018-05-01 --end-date 2018-05-31
@@ -48,40 +49,54 @@ uv run scope data/Conversation.csv -v
 
 **Results**: CSV file at `results/scope_results.csv` with temporal segments and topic probabilities.
 
+> **Performance Note**: JINA parallel processing is **enabled by default** (5 workers) for faster analysis. Spell checking is **disabled by default** for speed (minimal accuracy impact with embeddings).
+
 ---
 
 ## Examples
 
-### Example 1: Basic Analysis
+### Example 1: JINA Embeddings (Recommended - Best Quality)
 
 ```bash
-uv run scope "Chit-Chat Dataset/Conversation.csv"
+# JINA with parallel processing (enabled by default)
+uv run scope data/Conversation.csv -e jina -v
 ```
 
 ### Example 2: Custom Topics and Threshold
 
 ```bash
-uv run scope conversations.csv \
+# JINA with custom topics and threshold
+uv run scope data/Conversation.csv \
+  -e jina \
   --topics "Politics,Technology,Sports,Education" \
   --threshold 0.10 \
-  -o filtered_results.csv
+  -o filtered_results.csv \
+  -v
 ```
 
-### Example 3: Date Range with Jina
+### Example 3: Date Range Filtering
 
 ```bash
-export JINA_API_KEY=your_key_here
-uv run scope conversations.csv \
+# Analyze specific date range with JINA
+uv run scope data/Conversation.csv \
   -e jina \
   --start-date 2018-05-01 \
   --end-date 2018-05-31 \
-  -o may_jina_results.csv \
+  -o may_results.csv \
   -v
+```
+
+### Example 4: Local Embeddings (Faster, No API Key)
+
+```bash
+# SentenceTransformers for fast local processing
+uv run scope data/Conversation.csv -v
 ```
 
 > **For a complete list of available CLI arguments, see the [CLI Arguments](#cli-arguments) section below.**
 
 ---
+
 ---
 
 # **ADVANCED DOCUMENTATION BELOW**
@@ -89,6 +104,7 @@ uv run scope conversations.csv \
 **The following sections contain advanced configuration, technical details, and manual installation options.**
 
 ---
+
 ---
 
 ## Features
@@ -321,6 +337,7 @@ uv run scope --help
 See `SCOPE.pdf` for detailed research paper and methodology.
 
 ---
+
 ---
 
 # **MANUAL SETUP**
@@ -328,6 +345,7 @@ See `SCOPE.pdf` for detailed research paper and methodology.
 **The following section provides step-by-step manual installation instructions for users who prefer not to use the automated setup script.**
 
 ---
+
 ---
 
 ## Alternative Manual Installation
@@ -353,6 +371,7 @@ export PATH="$HOME/.cargo/bin:$PATH"
 ### Step 2: Install PostgreSQL with pgvector
 
 **macOS:**
+
 ```bash
 brew install postgresql@15 pgvector
 brew services start postgresql@15
@@ -361,6 +380,7 @@ psql scope -c "CREATE EXTENSION vector;"
 ```
 
 **Linux (Ubuntu/Debian):**
+
 ```bash
 sudo sh -c 'echo "deb http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list'
 wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo apt-key add -
@@ -390,6 +410,7 @@ cp .env.example .env
 If you installed PostgreSQL manually, here are useful management commands:
 
 **macOS:**
+
 ```bash
 # Start/stop/restart
 brew services start postgresql@15
@@ -407,6 +428,7 @@ psql scope -c "DELETE FROM keywords;"
 ```
 
 **Linux:**
+
 ```bash
 # Start/stop/restart
 sudo systemctl start postgresql
@@ -424,6 +446,7 @@ psql scope -c "DELETE FROM keywords;"
 ```
 
 **Using CLI flags:**
+
 ```bash
 uv run scope conversations.csv \
   --use-postgres \
