@@ -99,17 +99,17 @@ def parse_arguments() -> argparse.Namespace:
 
     # Preprocessing options
     parser.add_argument(
-        "--no-spell-check",
-        action="store_false",
+        "--spell-check",
+        action="store_true",
         dest="enable_spell_check",
-        help="Disable spell checking",
+        help="Enable spell checking (slow, disabled by default)",
     )
 
     parser.add_argument(
         "--no-lemmatize",
         action="store_false",
         dest="enable_lemmatization",
-        help="Disable lemmatization",
+        help="Disable lemmatization (enabled by default)",
     )
 
     # Output options
@@ -121,16 +121,10 @@ def parse_arguments() -> argparse.Namespace:
     )
 
     parser.add_argument(
-        "-v",
-        "--verbose",
-        action="store_true",
-        help="Verbose output",
-    )
-
-    parser.add_argument(
         "--quiet",
         action="store_true",
-        help="Minimal output",
+        dest="quiet",
+        help="Minimal output (disables verbose)",
     )
 
     # PostgreSQL options
@@ -516,9 +510,9 @@ def main() -> None:
         "keybert_model": args.keybert_model,
         "start_date": args.start_date,
         "end_date": args.end_date,
-        "enable_spell_check": args.enable_spell_check if hasattr(args, "enable_spell_check") else None,
+        "enable_spell_check": args.enable_spell_check if args.enable_spell_check else None,
         "enable_lemmatization": args.enable_lemmatization if hasattr(args, "enable_lemmatization") else None,
-        "verbose": args.verbose,
+        "verbose": False if args.quiet else None,
         "include_summary": args.include_summary if hasattr(args, "include_summary") else None,
         # Evaluation - disable if --no-evaluation flag is set
         "enable_evaluation": False if args.no_evaluation else None,

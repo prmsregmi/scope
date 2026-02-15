@@ -31,10 +31,10 @@ SCOPE analyzes conversational data to find temporal segments where users are dis
 ## Usage
 
 ```bash
-# Basic analysis (local embeddings, fast)
+# Basic analysis (with default verbose output)
 uv run scope data/Conversation.csv
 
-# With JINA embeddings (cloud-based, higher quality, parallel by default)
+# With JINA embeddings (recommended - best quality)
 uv run scope data/Conversation.csv -e jina
 
 # Custom threshold
@@ -43,13 +43,13 @@ uv run scope data/Conversation.csv -t 0.08
 # Date range filtering
 uv run scope data/Conversation.csv --start-date 2018-05-01 --end-date 2018-05-31
 
-# Verbose output
-uv run scope data/Conversation.csv -v
+# Quiet mode (minimal output)
+uv run scope data/Conversation.csv --quiet
 ```
 
 **Results**: CSV file at `results/scope_results.csv` with temporal segments and topic probabilities.
 
-> **Performance Note**: JINA parallel processing is **enabled by default** (5 workers) for faster analysis. Spell checking is **disabled by default** for speed (minimal accuracy impact with embeddings).
+> **Defaults**: Verbose output **ON** (use `--quiet` for minimal output), JINA parallel processing **enabled** (5 workers), spell checking **OFF** (use `--spell-check` to enable).
 
 ---
 
@@ -59,7 +59,7 @@ uv run scope data/Conversation.csv -v
 
 ```bash
 # JINA with parallel processing (enabled by default)
-uv run scope data/Conversation.csv -e jina -v
+uv run scope data/Conversation.csv -e jina
 ```
 
 ### Example 2: Custom Topics and Threshold
@@ -70,8 +70,7 @@ uv run scope data/Conversation.csv \
   -e jina \
   --topics "Politics,Technology,Sports,Education" \
   --threshold 0.10 \
-  -o filtered_results.csv \
-  -v
+  -o filtered_results.csv
 ```
 
 ### Example 3: Date Range Filtering
@@ -82,15 +81,21 @@ uv run scope data/Conversation.csv \
   -e jina \
   --start-date 2018-05-01 \
   --end-date 2018-05-31 \
-  -o may_results.csv \
-  -v
+  -o may_results.csv
 ```
 
 ### Example 4: Local Embeddings (Faster, No API Key)
 
 ```bash
 # SentenceTransformers for fast local processing
-uv run scope data/Conversation.csv -v
+uv run scope data/Conversation.csv
+```
+
+### Example 5: Quiet Mode (Minimal Output)
+
+```bash
+# Run with minimal output (verbose is on by default)
+uv run scope data/Conversation.csv --quiet
 ```
 
 > **For a complete list of available CLI arguments, see the [CLI Arguments](#cli-arguments) section below.**

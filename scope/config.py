@@ -53,7 +53,7 @@ class ScopeConfig:
     end_date: Optional[str] = None
     enable_spell_check: bool = False
     enable_lemmatization: bool = True
-    verbose: bool = False
+    verbose: bool = True
     include_summary: bool = True
     # Evaluation
     enable_evaluation: bool = True
