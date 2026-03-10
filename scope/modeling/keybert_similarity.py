@@ -1,6 +1,8 @@
 """KeyBERT-based keyword extraction and similarity calculation."""
 
+import logging
 import math
+import time
 from typing import Optional
 
 import numpy as np
@@ -61,6 +63,12 @@ class KeyBERTSimilarityCalculator:
 
         # Cache for probability calculations
         self._probability_cache: dict[tuple, list[float]] = {}
+
+        # Timing instrumentation
+        self._time_keybert_extract: float = 0.0
+        self._time_similarity: float = 0.0
+        self._cache_hits: int = 0
+        self._cache_misses: int = 0
 
         # Pre-compute topic embeddings
         self._compute_topic_embeddings()
@@ -172,16 +180,20 @@ class KeyBERTSimilarityCalculator:
         # Create cache key (include mode to avoid cache collision)
         cache_key = (self.calculation_mode, original_text, tuple(cleaned_word_list))
         if cache_key in self._probability_cache:
+            self._cache_hits += 1
             return self._probability_cache[cache_key]
+        self._cache_misses += 1
 
         # Extract keywords from ORIGINAL text (not preprocessed)
         # This preserves context for better keyword extraction
         try:
+            t0 = time.perf_counter()
             keyword_ranks = self.keybert.extract_keywords(
                 original_text,
                 top_n=min(len(cleaned_word_list), 20),  # Extract up to 20 keywords
                 stop_words='english',
             )
+            self._time_keybert_extract += time.perf_counter() - t0
         except Exception:
             # If KeyBERT fails (e.g., empty text), return uniform distribution
             uniform_prob = 1.0 / len(self.topics)
@@ -209,6 +221,7 @@ class KeyBERTSimilarityCalculator:
             document_embedding = self._get_embedding(document_text)
 
         # Calculate similarity scores for each topic
+        t1 = time.perf_counter()
         prob_list = [0.0 for _ in range(len(self.topics))]
 
         # Extract keyword texts for batch processing
@@ -268,6 +281,8 @@ class KeyBERTSimilarityCalculator:
                 cleaned_word_list,
                 document_embedding
             )
+
+        self._time_similarity += time.perf_counter() - t1
 
         # Apply softmax normalization to convert to probabilities
         prob_list = self._softmax(prob_list)
@@ -373,3 +388,14 @@ class KeyBERTSimilarityCalculator:
             "embedding_cache": len(self._embedding_cache),
             "probability_cache": len(self._probability_cache),
         }
+
+    def log_timing_stats(self) -> None:
+        """Log aggregate timing statistics for KeyBERT scoring."""
+        logger = logging.getLogger(__name__)
+        total = self._time_keybert_extract + self._time_similarity
+        logger.info(
+            f"[KeyBERT timing] extract_keywords: {self._time_keybert_extract:.2f}s | "
+            f"similarity: {self._time_similarity:.2f}s | "
+            f"total: {total:.2f}s | "
+            f"cache hits: {self._cache_hits}, misses: {self._cache_misses}"
+        )

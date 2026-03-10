@@ -53,6 +53,9 @@ htmlcov/
 # Results folder (all outputs, evaluations, test data, temporary docs)
 results/
 
+# Data folder (all data files)
+archive/
+
 # OS
 .DS_Store
 Thumbs.db
