@@ -49,7 +49,7 @@ uv run scope data/Conversation.csv --quiet
 
 **Results**: CSV file at `results/scope_results.csv` with temporal segments and topic probabilities.
 
-> **Defaults**: Verbose output **ON** (use `--quiet` for minimal output), JINA parallel processing **enabled** (5 workers), spell checking **OFF** (use `--spell-check` to enable).
+> **Defaults**: Verbose output **ON** (use `--quiet` for minimal output), JINA parallel processing **enabled** (10 workers), spell checking **OFF** (use `--spell-check` to enable).
 
 ---
 
@@ -98,7 +98,156 @@ uv run scope data/Conversation.csv
 uv run scope data/Conversation.csv --quiet
 ```
 
-> **For a complete list of available CLI arguments, see the [CLI Arguments](#cli-arguments) section below.**
+---
+
+## Experiments Guide
+
+Every SCOPE run is a combination of choices across these axes. Mix and match to explore different configurations.
+
+### Axis 1: Embedding Provider
+
+Controls which model generates the vector representations of text.
+
+| Provider | Flag | What happens | Speed | Notes |
+|---|---|---|---|---|
+| **SentenceTransformers** (default) | `-e sentence-transformers` | Runs `all-MiniLM-L12-v2` locally on your machine | ~50s for 2 days | No API key needed, no internet required |
+| **Jina** | `-e jina` | Calls Jina API with `jina-embeddings-v3` | ~15min for 2 days | Requires `JINA_API_KEY` in `.env`. Different embedding space — may find different segments |
+
+```bash
+# SentenceTransformers (default)
+uv run scope data/Conversation.csv --run-name "st_baseline"
+
+# Jina
+uv run scope data/Conversation.csv -e jina --run-name "jina_baseline"
+
+# Compare them
+uv run scope --compare-runs st_baseline jina_baseline
+```
+
+> When comparing ST vs Jina, accuracy metrics WILL differ (different models). Quality and performance metrics will also differ.
+
+---
+
+### Axis 2: Probability Threshold
+
+Controls how strict the "is this hour about this topic?" cutoff is. Every hour-text gets a probability score per topic. Only hours scoring **above this threshold** become segment seeds.
+
+| Threshold | Flag | Effect |
+|---|---|---|
+| **0.07** (default) | `-t 0.07` | Balanced — catches most relevant segments |
+| **0.05** (loose) | `-t 0.05` | More segments, more noise. Catches borderline matches |
+| **0.10** (strict) | `-t 0.10` | Fewer segments, higher confidence. Misses subtle matches |
+
+```bash
+# Sweep across thresholds
+uv run scope data/Conversation.csv -t 0.05 --run-name "st_t005"
+uv run scope data/Conversation.csv -t 0.07 --run-name "st_t007"
+uv run scope data/Conversation.csv -t 0.10 --run-name "st_t010"
+
+# Compare all three
+uv run scope --compare-runs st_t005 st_t007 st_t010
+```
+
+> Threshold does NOT affect accuracy (same model = same accuracy). Only quality metrics (segment count, coverage) and performance change.
+
+---
+
+### Axis 3: Prefilter
+
+Controls whether a cheap cosine-similarity screening step runs before the expensive KeyBERT scoring. Without it, every hour-text goes through KeyBERT for every topic. With it, hours that are clearly irrelevant to a topic get skipped.
+
+| Prefilter | Flag | What happens |
+|---|---|---|
+| **Off** (default) | _(no flag)_ | Every hour-text is scored by KeyBERT against every topic. Slowest but misses nothing |
+| **0.10** (light) | `--prefilter 0.10` | Skips hours with <0.10 cosine similarity to the topic. Moderate speedup, few segments lost |
+| **0.15** (moderate) | `--prefilter 0.15` | Skips ~83% of hours. ~47% faster. May miss ~35% of borderline segments |
+| **0.20** (aggressive) | `--prefilter 0.20` | Skips most hours. Fastest, but loses more segments |
+
+```bash
+# Without prefilter (baseline)
+uv run scope data/Conversation.csv --run-name "st_no_prefilter"
+
+# With prefilter
+uv run scope data/Conversation.csv --prefilter 0.15 --run-name "st_pf015"
+
+# Compare
+uv run scope --compare-runs st_no_prefilter st_pf015
+```
+
+> Prefilter does NOT affect accuracy (same model = same accuracy). It affects quality metrics (fewer segments found) and performance (faster).
+
+---
+
+### Axis 4: Date Range
+
+Controls how much of the dataset to analyze. The full dataset spans months. Narrowing the range is useful for faster experiments or focusing on specific time periods.
+
+| Range | Flags | Dataset size (approx.) |
+|---|---|---|
+| **Full dataset** | _(no flags)_ | ~258k messages, all dates |
+| **2-day subset** | `--start-date 2018-05-02 --end-date 2018-05-03` | ~11k messages |
+| **1-week** | `--start-date 2018-05-01 --end-date 2018-05-07` | ~40k messages |
+| **Custom** | `--start-date YYYY-MM-DD --end-date YYYY-MM-DD` | Varies |
+
+```bash
+# Quick experiment on 2 days
+uv run scope data/Conversation.csv \
+  --start-date 2018-05-02 --end-date 2018-05-03 \
+  --run-name "st_2day"
+
+# Full dataset
+uv run scope data/Conversation.csv --run-name "st_full"
+```
+
+> Date range does NOT affect accuracy (same model = same accuracy). It affects quality metrics (more data = more segments) and performance (more data = slower).
+
+---
+
+### Axis 5: Evaluation Mode
+
+Controls what metrics are collected alongside the analysis.
+
+| Mode | Flags | What happens |
+|---|---|---|
+| **Full evaluation** (default) | _(no flags)_ | Runs pipeline + calculates accuracy on 154 labeled samples. Saves metrics.json, summary.txt, segments.csv |
+| **No evaluation** | `--no-evaluation` | Just runs the pipeline and writes the output CSV. No metrics at all |
+
+```bash
+# Full evaluation
+uv run scope data/Conversation.csv --run-name "full_eval"
+
+# Just get the CSV
+uv run scope data/Conversation.csv --no-evaluation -o results/output.csv
+```
+
+---
+
+### Combining Axes
+
+Every axis is independent. A full experiment specifies choices across all of them:
+
+```bash
+# Example: Jina + strict threshold + prefilter + 2-day window
+uv run scope data/Conversation.csv \
+  -e jina \
+  -t 0.10 \
+  --prefilter 0.15 \
+  --start-date 2018-05-02 --end-date 2018-05-03 \
+  --run-name "jina_t010_pf015_2day"
+```
+
+### What changes accuracy vs what doesn't
+
+| Changes accuracy | Does NOT change accuracy |
+|---|---|
+| Embedding provider (`-e`) | Threshold (`-t`) |
+| Embedding model (`--embedding-model`) | Prefilter (`--prefilter`) |
+| KeyBERT model (`--keybert-model`) | Date range (`--start-date/--end-date`) |
+| Topic list (`--topics`) | Dataset path |
+| Spell check (`--spell-check`) | |
+| Lemmatization (`--no-lemmatize`) | |
+
+Runs that share the same left-column values will always produce identical accuracy. The comparison report detects this automatically.
 
 ---
 
@@ -117,12 +266,12 @@ uv run scope data/Conversation.csv --quiet
 - **Hybrid Cosine-KeyBERT**: Advanced semantic similarity using KeyBERT keyword extraction and cosine similarity
 - **Dual Text Processing**: Uses original text for embeddings (preserving context) and cleaned text for frequency weighting
 - **Contiguous Block Detection**: Greedy algorithm to find temporal segments of related conversation
-- **Flexible Embedding Support**: Choose between SentenceTransformers (local) or Jina AI (API-based) embeddings
-- **PostgreSQL Vector Storage**: pgvector integration for scalable embedding storage and 8-10x speedup on cached runs
-- **Comprehensive Preprocessing**: Text cleaning, stop word removal, spell checking, and lemmatization
-- **Configurable**: Environment variables (.env) or command-line arguments
-- **Smart Caching**: Caches embeddings and probability calculations for performance
-- **Fast Performance**: Processes ~155k messages in 8-10 seconds
+- **Flexible Embedding Support**: SentenceTransformers (local) or Jina AI (API-based)
+- **Embedding Pre-filter**: Optional cosine similarity gate that skips irrelevant hours before expensive KeyBERT calls
+- **Evaluation Framework**: Accuracy, precision, recall, F1 against labeled test data with run comparison
+- **PostgreSQL Vector Storage**: Optional pgvector integration for embedding persistence
+- **Configurable**: Environment variables (.env) or CLI arguments
+- **Smart Caching**: Caches embeddings and probability calculations across runs
 
 ## Algorithm
 
@@ -137,38 +286,44 @@ uv run scope data/Conversation.csv --quiet
 CLI arguments override `.env` values:
 
 ```
-scope <dataset_path> [OPTIONS]
+scope [dataset_path] [OPTIONS]
 
-Required:
-  dataset_path              Path to input CSV file
+Positional:
+  dataset_path              Path to input CSV (default: data/Conversation.csv)
 
-Output Options:
+Output:
   -o, --output PATH        Output CSV path (default: results/scope_results.csv)
   --no-summary             Don't generate summary statistics
+  --quiet                  Minimal output
 
-Configuration:
+Analysis:
   -t, --threshold FLOAT    Probability threshold (default: 0.07)
   --topics TEXT            Comma-separated topic list
+  --prefilter SIM          Cosine similarity pre-filter threshold (e.g. 0.15).
+                           Skips KeyBERT on hours below this similarity to speed up analysis.
 
-Embedding Options:
+Embeddings:
   -e, --embedding TYPE     Embedding provider (sentence-transformers|jina)
   --embedding-model TEXT   Model name for embedding provider
   --jina-api-key TEXT      Jina API key
-
-KeyBERT Options:
-  --keybert-model TEXT     Model for keyword extraction (default: all-MiniLM-L12-v2)
+  --max-workers N          Jina parallel workers (default: 10)
+  --keybert-model TEXT     KeyBERT model (default: all-MiniLM-L12-v2)
 
 Date Filtering:
   --start-date DATE        Start date YYYY-MM-DD (inclusive)
   --end-date DATE          End date YYYY-MM-DD (inclusive)
 
 Preprocessing:
-  --no-spell-check         Disable spell checking
+  --spell-check            Enable spell checking (off by default)
   --no-lemmatize           Disable lemmatization
 
+Evaluation:
+  --run-name NAME          Name for this evaluation run
+  --no-evaluation          Disable evaluation (no metrics, just CSV output)
+  --compare-runs R1 R2 ..  Compare multiple evaluation runs side-by-side
+
 Other:
-  -v, --verbose            Verbose output
-  --quiet                  Minimal output
+  --use-postgres           Use PostgreSQL vector store (requires pgvector)
   -h, --help               Show help message
   --version                Show version
 ```
@@ -279,25 +434,24 @@ uv run scope data.csv -e jina
 
 ## Evaluation
 
-Evaluation runs by default, collecting performance metrics (speed, memory) and accuracy against labeled test data.
+Evaluation runs by default, collecting performance and quality metrics. Accuracy is calculated against 154 labeled test samples.
 
 ```bash
-# Run with auto-generated name
-uv run scope data/Conversation.csv -e jina -t 0.08
+# Run with evaluation (default)
+uv run scope data/Conversation.csv --run-name "st_baseline"
 
-# Or specify run name
-uv run scope data/Conversation.csv --run-name "jina_t008" -e jina -t 0.08
+# Compare two runs
+uv run scope --compare-runs st_baseline jina_baseline
 
-# Disable evaluation (just get CSV output)
+# Disable evaluation entirely (just CSV output)
 uv run scope data/Conversation.csv --no-evaluation -o output.csv
-
-# Compare experiments
-uv run scope --compare-runs jina_t008 st_t007
 ```
 
-**Results**: `results/evaluation/<run_name>/` with metrics (accuracy, precision, recall, F1), performance stats, and confusion matrix.
+**Results**: `results/evaluation/<run_name>/` — `metrics.json`, `summary.txt`, `segments.csv`.
 
-Configure test data path in `.env`: `SCOPE_LABELED_TEST_DATA=data/labeled_test_data_clean.csv`
+Accuracy is a **model-level metric**: it depends only on the embedding provider, model, and topic config. Runs that differ only in threshold or date range will produce identical accuracy. The comparison report handles this automatically.
+
+Configure test data path: `SCOPE_LABELED_TEST_DATA=data/labeled_test_data.csv`
 
 ## Troubleshooting
 

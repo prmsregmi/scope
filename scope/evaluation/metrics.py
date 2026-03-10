@@ -203,7 +203,7 @@ class EvaluationMetrics:
         # Add accuracy section if available
         if self.accuracy:
             lines.append("")
-            lines.append("ACCURACY (vs Ground Truth):")
+            lines.append("ACCURACY (model-level — independent of pipeline params):")
             lines.append(f"  Overall Accuracy: {self.accuracy.accuracy * 100:.2f}% ({self.accuracy.correct_predictions}/{self.accuracy.total_samples})")
             lines.append(f"  Precision: {self.accuracy.precision:.4f}")
             lines.append(f"  Recall: {self.accuracy.recall:.4f}")

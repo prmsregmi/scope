@@ -53,7 +53,7 @@ def parse_arguments() -> argparse.Namespace:
         "--threshold",
         dest="probability_threshold",
         type=float,
-        help="Probability threshold (default: 0.05)",
+        help="Probability threshold (default: 0.07)",
     )
 
     parser.add_argument(
@@ -159,6 +159,27 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument(
         "--postgres-password",
         help="PostgreSQL password",
+    )
+
+    # Pre-filter option
+    parser.add_argument(
+        "--prefilter",
+        dest="prefilter_sim_threshold",
+        type=float,
+        default=None,
+        metavar="SIM",
+        help="Enable embedding pre-filter for block finding. "
+             "Skips expensive KeyBERT calls on hour/block texts whose direct "
+             "cosine similarity to the topic is below SIM (e.g. 0.15). "
+             "Speeds up analysis at the cost of possibly missing borderline blocks.",
+    )
+
+    parser.add_argument(
+        "--max-workers",
+        dest="jina_max_workers",
+        type=int,
+        default=None,
+        help="Maximum parallel workers for Jina API requests (default: 10)",
     )
 
     # Evaluation options
@@ -390,6 +411,7 @@ def run_analysis(config: ScopeConfig) -> None:
         block_finder = ContiguousBlockFinder(
             config.probability_threshold,
             prob_calc,
+            prefilter_sim_threshold=config.prefilter_sim_threshold,
         )
 
         user_blocks = block_finder.find_all_blocks(
@@ -411,6 +433,7 @@ def run_analysis(config: ScopeConfig) -> None:
         )
 
         logger.info(f"Found {len(segments)} segments")
+        prob_calc.keybert_calc.log_timing_stats()
 
         # 8. Write results
         logger.info(f"Writing results to {config.output_path}")
@@ -516,6 +539,8 @@ def main() -> None:
         "include_summary": args.include_summary if hasattr(args, "include_summary") else None,
         # Evaluation - disable if --no-evaluation flag is set
         "enable_evaluation": False if args.no_evaluation else None,
+        "prefilter_sim_threshold": args.prefilter_sim_threshold,
+        "jina_max_workers": args.jina_max_workers,
         # For boolean flags (store_true), only override if explicitly True
         # Otherwise, keep the env var value to avoid overriding True with False
         "use_postgres": args.use_postgres if args.use_postgres else None,

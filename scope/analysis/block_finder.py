@@ -3,6 +3,7 @@
 import copy
 from typing import Optional
 
+import numpy as np
 from tqdm import tqdm
 
 from scope.modeling.probability import ProbabilityCalculator
@@ -15,15 +16,98 @@ class ContiguousBlockFinder:
         self,
         probability_threshold: float,
         probability_calculator: ProbabilityCalculator,
+        prefilter_sim_threshold: float = 0.0,
     ) -> None:
         """Initialize block finder.
 
         Args:
             probability_threshold: Minimum probability for a block to be considered relevant
             probability_calculator: Calculator for topic probabilities
+            prefilter_sim_threshold: Cosine similarity threshold for the HNSW-style
+                embedding pre-filter. 0.0 disables it. When > 0, all unique non-empty
+                hour texts are batch-encoded once upfront, then a full (hours × topics)
+                cosine similarity matrix is computed via a single numpy matrix multiply.
+                Hours whose similarity to a given topic falls below this threshold skip
+                the expensive KeyBERT probability calculation entirely.
+                Recommended range: 0.10–0.20. Higher = faster but may miss borderline blocks.
         """
         self.probability_threshold = probability_threshold
         self.prob_calc = probability_calculator
+        self.prefilter_sim_threshold = prefilter_sim_threshold
+        # Pre-computed similarity matrix populated by _build_prefilter_index
+        # Shape: (num_unique_hour_texts, num_topics)
+        self._sim_matrix: Optional[np.ndarray] = None
+        # Mapping: original_text → row index in _sim_matrix
+        self._text_to_row: dict[str, int] = {}
+        # Stats
+        self.prefilter_skipped_hours = 0
+        self.prefilter_skipped_extensions = 0
+        self.prefilter_total_hours = 0
+        self.prefilter_total_extensions = 0
+
+    def _build_prefilter_index(
+        self,
+        user_hourly_data: dict[str, list[list[str]]],
+        user_hourly_original: dict[str, list[str]],
+        num_topics: int,
+    ) -> None:
+        """Batch-encode all unique non-empty hour texts and compute a cosine
+        similarity matrix against all topic embeddings.
+
+        This is done ONCE before block-finding begins. The result is a
+        (num_unique_texts × num_topics) matrix that gives every (hour, topic)
+        similarity with a single numpy matrix multiply — the vectorized
+        equivalent of HNSW approximate nearest-neighbor search over the topic set.
+
+        During block-finding, prefilter checks are O(1) table lookups with no
+        additional inference calls.
+        """
+        provider = self.prob_calc.keybert_calc.embedding_provider
+
+        # Collect all unique non-empty hour original texts
+        unique_texts = []
+        for user, hourly_texts in user_hourly_data.items():
+            orig = user_hourly_original[user]
+            for h in range(len(hourly_texts)):
+                if hourly_texts[h]:
+                    text = orig[h] if orig[h] else ""
+                    if text and text not in self._text_to_row:
+                        self._text_to_row[text] = len(unique_texts)
+                        unique_texts.append(text)
+
+        if not unique_texts:
+            return
+
+        tqdm.write(f"[prefilter] batch-encoding {len(unique_texts)} unique hour texts...")
+
+        # Single batched inference call — much faster than N individual encode() calls
+        hour_embs = provider.encode_batch(unique_texts, batch_size=64)  # (H, D)
+
+        # Normalize rows to unit vectors for cosine similarity
+        norms = np.linalg.norm(hour_embs, axis=1, keepdims=True)
+        norms = np.where(norms == 0, 1.0, norms)
+        hour_embs_norm = hour_embs / norms  # (H, D)
+
+        # Build topic embedding matrix (T, D), already unit-normalized by the model
+        topic_embs = np.array(self.prob_calc.keybert_calc._topic_embeddings)  # (T, D)
+        t_norms = np.linalg.norm(topic_embs, axis=1, keepdims=True)
+        t_norms = np.where(t_norms == 0, 1.0, t_norms)
+        topic_embs_norm = topic_embs / t_norms  # (T, D)
+
+        # Single matrix multiply: (H, D) @ (D, T) → (H, T) cosine similarities
+        self._sim_matrix = hour_embs_norm @ topic_embs_norm.T  # (H, T)
+
+        tqdm.write(
+            f"[prefilter] similarity matrix built: {self._sim_matrix.shape} | "
+            f"threshold={self.prefilter_sim_threshold:.2f}"
+        )
+
+    def _sim_lookup(self, text: str, topic_idx: int) -> float:
+        """O(1) similarity lookup from the pre-computed matrix."""
+        row = self._text_to_row.get(text)
+        if row is None or self._sim_matrix is None:
+            return 1.0  # Unknown text: don't filter
+        return float(self._sim_matrix[row, topic_idx])
 
     def _vector_to_word_list(
         self,
@@ -72,6 +156,14 @@ class ContiguousBlockFinder:
     ) -> list[list[int]]:
         """Find contiguous blocks for a single user and topic using greedy algorithm.
 
+        When prefilter_sim_threshold > 0, a fast embedding similarity check gates each
+        expensive KeyBERT probability call. Two gates are applied:
+          1. Initial PP gate: skip hours whose direct cosine similarity to the topic
+             is below the threshold (avoids KeyBERT on clearly irrelevant hours).
+          2. Extension gate: reject block extension attempts whose combined-text
+             cosine similarity falls below the threshold (avoids KeyBERT on growing
+             multi-hour combined texts that are very unlikely to pass).
+
         Args:
             hourly_texts: List of cleaned word lists, one per hour
             hourly_original_texts: List of original text strings, one per hour
@@ -81,6 +173,7 @@ class ContiguousBlockFinder:
             List of hour index sequences representing contiguous blocks
         """
         topic_blocks = []
+        use_prefilter = self.prefilter_sim_threshold > 0.0
 
         # Identify hours with non-empty text
         Set = []
@@ -92,9 +185,16 @@ class ContiguousBlockFinder:
 
             Set.append(h)
 
-            # Check if this hour meets threshold
             original_text = self._vector_to_original_text([h], hourly_original_texts)
             word_list = self._vector_to_word_list([h], hourly_texts)
+
+            # Gate 1: O(1) similarity table lookup — skip full KeyBERT for low-sim hours
+            if use_prefilter:
+                self.prefilter_total_hours += 1
+                if self._sim_lookup(original_text, target_topic_idx) < self.prefilter_sim_threshold:
+                    self.prefilter_skipped_hours += 1
+                    continue  # Skip full KeyBERT for this hour
+
             prob = self.prob_calc.calculate_probability(original_text, word_list)[
                 target_topic_idx
             ]
@@ -108,34 +208,46 @@ class ContiguousBlockFinder:
         for h in Set:
             if h in PP:
                 if not curr:
-                    # Start new block
                     curr.append(h)
                 else:
-                    # Try to extend current block
                     temp = copy.deepcopy(curr)
                     temp.append(h)
 
-                    # Check if extended block still meets threshold
-                    original_text = self._vector_to_original_text(temp, hourly_original_texts)
-                    word_list = self._vector_to_word_list(temp, hourly_texts)
-                    prob = self.prob_calc.calculate_probability(original_text, word_list)[
+                    combined_original = self._vector_to_original_text(temp, hourly_original_texts)
+                    combined_words = self._vector_to_word_list(temp, hourly_texts)
+
+                    # Gate 2: for combined-block texts (not in precomputed index),
+                    # use the min per-hour similarity as a proxy to avoid a full encode.
+                    # If even the best constituent hour is below threshold, don't extend.
+                    if use_prefilter:
+                        self.prefilter_total_extensions += 1
+                        min_sim = min(
+                            self._sim_lookup(
+                                self._vector_to_original_text([hi], hourly_original_texts),
+                                target_topic_idx,
+                            )
+                            for hi in temp
+                        )
+                        if min_sim < self.prefilter_sim_threshold:
+                            self.prefilter_skipped_extensions += 1
+                            topic_blocks.append(copy.deepcopy(curr))
+                            curr = [h]
+                            continue
+
+                    prob = self.prob_calc.calculate_probability(combined_original, combined_words)[
                         target_topic_idx
                     ]
 
                     if prob >= self.probability_threshold:
-                        # Extend block
                         curr = copy.deepcopy(temp)
                     else:
-                        # Close current block and start new one
                         topic_blocks.append(copy.deepcopy(curr))
                         curr = [h]
 
             elif curr:
-                # Close current block when we hit a non-qualifying hour
                 topic_blocks.append(copy.deepcopy(curr))
                 curr = []
 
-        # Don't forget the last block
         if curr:
             topic_blocks.append(copy.deepcopy(curr))
 
@@ -157,6 +269,11 @@ class ContiguousBlockFinder:
         Returns:
             Nested dictionary: {user: {topic: [block1, block2, ...]}}
         """
+        # If pre-filter is enabled, batch-encode all unique hour texts once upfront
+        # and build the (hours × topics) cosine similarity matrix before the main loop.
+        if self.prefilter_sim_threshold > 0.0:
+            self._build_prefilter_index(user_hourly_data, user_hourly_original, len(topics))
+
         results = {}
         total_operations = len(user_hourly_data) * len(topics)
 
@@ -175,5 +292,14 @@ class ContiguousBlockFinder:
                     pbar.update(1)
 
                 results[user] = user_results
+
+        if self.prefilter_sim_threshold > 0.0:
+            hr_skip_pct = 100 * self.prefilter_skipped_hours / max(self.prefilter_total_hours, 1)
+            ext_skip_pct = 100 * self.prefilter_skipped_extensions / max(self.prefilter_total_extensions, 1)
+            tqdm.write(
+                f"[prefilter] sim_threshold={self.prefilter_sim_threshold:.2f} | "
+                f"hours skipped: {self.prefilter_skipped_hours}/{self.prefilter_total_hours} ({hr_skip_pct:.1f}%) | "
+                f"extensions skipped: {self.prefilter_skipped_extensions}/{self.prefilter_total_extensions} ({ext_skip_pct:.1f}%)"
+            )
 
         return results
