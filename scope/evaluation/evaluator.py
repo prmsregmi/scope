@@ -1,6 +1,7 @@
 """SCOPE evaluation framework."""
 
 import json
+import re
 import time
 import tracemalloc
 from datetime import datetime
@@ -112,10 +113,17 @@ class ScopeEvaluator:
             self.logger.info(f"Initializing embedding provider: {config.embedding_provider}")
             embedding_start = time.time()
 
-            embedding_provider = get_embedding_provider(
-                config.embedding_provider,
+            provider_kwargs = dict(
                 model=config.embedding_model,
                 api_key=config.jina_api_key,
+            )
+            if config.embedding_provider == "jina":
+                provider_kwargs["parallel_requests"] = config.jina_parallel_requests
+                provider_kwargs["max_workers"] = config.jina_max_workers
+
+            embedding_provider = get_embedding_provider(
+                config.embedding_provider,
+                **provider_kwargs,
             )
 
             # 4. Initialize Probability Calculator
@@ -138,6 +146,7 @@ class ScopeEvaluator:
             block_finder = ContiguousBlockFinder(
                 config.probability_threshold,
                 prob_calc,
+                prefilter_sim_threshold=getattr(config, 'prefilter_sim_threshold', 0.0),
             )
 
             user_blocks = block_finder.find_all_blocks(
@@ -156,6 +165,7 @@ class ScopeEvaluator:
             )
 
             times["analysis"] = time.time() - analysis_start
+            prob_calc.keybert_calc.log_timing_stats()
 
             # 6. Collect metrics
             total_time = time.time() - start_time
@@ -187,8 +197,9 @@ class ScopeEvaluator:
             # Quality metrics
             quality = self._calculate_quality_metrics(segments, len(df), date_list)
 
-            # Accuracy metrics (if labeled data provided)
+            # Accuracy metrics
             accuracy = None
+            accuracy_fingerprint = config.accuracy_fingerprint
             if labeled_data_path:
                 self.logger.info("Calculating accuracy metrics on test data...")
                 accuracy = self._calculate_accuracy_metrics(labeled_data_path, prob_calc, text_cleaner)
@@ -205,6 +216,8 @@ class ScopeEvaluator:
                     "start_date": start_date,
                     "end_date": end_date,
                     "num_topics": len(config.topics),
+                    "prefilter_sim_threshold": config.prefilter_sim_threshold,
+                    "accuracy_fingerprint": accuracy_fingerprint,
                 },
                 performance=performance,
                 quality=quality,
@@ -377,8 +390,18 @@ class ScopeEvaluator:
             ground_truth = []
 
             for idx, row in df.iterrows():
-                text = str(row["Chat Summary"])
+                raw_text = str(row["Chat Summary"])
                 true_label = row["Human Label"]
+
+                # Strip chat metadata prefixes ("User-X :: Chatroom-Y [timestamp]: ")
+                # from each line so KeyBERT extracts topical keywords instead of
+                # metadata tokens like "chatroom" and "user" that dominate scoring.
+                lines = raw_text.strip().split("\n")
+                text = " ".join(
+                    re.sub(r"^.*?\]:\s*", "", line.strip())
+                    for line in lines
+                    if line.strip()
+                )
 
                 # Clean text using current config's preprocessing
                 cleaned_words = text_cleaner.clean(text)
@@ -523,6 +546,14 @@ class ScopeEvaluator:
         if not metrics_list:
             return "No metrics found to compare"
 
+        # Check for duplicate accuracy fingerprints — alert if two runs will
+        # always produce identical accuracy because they share the same model/topic config.
+        fingerprints = {}
+        for m in metrics_list:
+            fp = m.get("config", {}).get("accuracy_fingerprint", "")
+            if fp:
+                fingerprints.setdefault(fp, []).append(m["run_name"])
+
         # Generate comparison report
         lines = [
             "=" * 100,
@@ -530,6 +561,23 @@ class ScopeEvaluator:
             "=" * 100,
             "",
         ]
+
+        # Emit alerts for runs sharing the same accuracy fingerprint
+        for fp, names in fingerprints.items():
+            if len(names) > 1:
+                lines.append(
+                    f"NOTE: Runs {names} share the same embedding provider, model,"
+                )
+                lines.append(
+                    f"  and topic config. Their accuracy metrics will always be identical"
+                )
+                lines.append(
+                    f"  regardless of date range or dataset size. Only quality/performance"
+                )
+                lines.append(
+                    f"  metrics differ between these runs."
+                )
+                lines.append("")
 
         # Comparison table header
         lines.append(f"{'Metric':<40} " + " ".join(f"{m['run_name']:<20}" for m in metrics_list))
@@ -577,6 +625,54 @@ class ScopeEvaluator:
                 values.append(f"{value:<20.2f}")
 
             lines.append(f"{label:<40} " + " ".join(values))
+
+        # Accuracy metrics — deduplicate when fingerprints match
+        has_accuracy = any("accuracy" in m for m in metrics_list)
+        if has_accuracy:
+            # Group runs by fingerprint
+            unique_fingerprints = set()
+            for fp, names in fingerprints.items():
+                unique_fingerprints.add(fp)
+
+            all_same_fingerprint = len(unique_fingerprints) <= 1 and len(metrics_list) > 1
+
+            if all_same_fingerprint:
+                # Show accuracy once — it's identical across all runs
+                lines.append("\nACCURACY (identical across all runs — same model config):")
+                ref = metrics_list[0].get("accuracy", {})
+                if ref:
+                    lines.append(f"  Accuracy: {ref.get('accuracy_percentage', 'N/A')}%"
+                                 f" ({ref.get('correct_predictions', '?')}/{ref.get('total_samples', '?')})")
+                    lines.append(f"  Precision: {ref.get('precision', 'N/A')}")
+                    lines.append(f"  Recall: {ref.get('recall', 'N/A')}")
+                    lines.append(f"  F1 Score: {ref.get('f1_score', 'N/A')}")
+                    lines.append("")
+                    lines.append("  Only quality/performance metrics differ between these runs.")
+                else:
+                    lines.append("  N/A")
+            else:
+                # Different model configs — show side-by-side comparison
+                lines.append("\nACCURACY (model-level — independent of pipeline params):")
+                accuracy_metrics = [
+                    ("Accuracy (%)", "accuracy.accuracy_percentage"),
+                    ("Precision", "accuracy.precision"),
+                    ("Recall", "accuracy.recall"),
+                    ("F1 Score", "accuracy.f1_score"),
+                ]
+
+                for label, key in accuracy_metrics:
+                    values = []
+                    for m in metrics_list:
+                        keys = key.split(".")
+                        value = m
+                        for k in keys:
+                            value = value.get(k, "N/A") if isinstance(value, dict) else "N/A"
+                        if isinstance(value, (int, float)):
+                            values.append(f"{value:<20.2f}")
+                        else:
+                            values.append(f"{'N/A':<20}")
+
+                    lines.append(f"{label:<40} " + " ".join(values))
 
         lines.append("")
         lines.append("=" * 100)
