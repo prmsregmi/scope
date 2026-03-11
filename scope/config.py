@@ -49,6 +49,7 @@ class ScopeConfig:
     jina_parallel_requests: bool = True
     jina_max_workers: int = 10
     prefilter_sim_threshold: float = 0.0
+    use_keybert: bool = True
     keybert_model: str = "all-MiniLM-L12-v2"
     start_date: Optional[str] = None
     end_date: Optional[str] = None
@@ -77,7 +78,7 @@ class ScopeConfig:
         """
         return (
             f"{self.embedding_provider}|{self.embedding_model}|"
-            f"{self.keybert_model}|{','.join(sorted(self.topics))}|"
+            f"{self.use_keybert}|{self.keybert_model}|{','.join(sorted(self.topics))}|"
             f"{self.enable_spell_check}|{self.enable_lemmatization}"
         )
 

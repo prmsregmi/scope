@@ -20,6 +20,7 @@ class ProbabilityCalculator:
         keybert_model: str = "all-MiniLM-L12-v2",
         calculation_mode: str = "jina_mixed",
         vector_store: Optional["VectorStore"] = None,
+        use_keybert: bool = True,
     ) -> None:
         """Initialize probability calculator.
 
@@ -29,6 +30,7 @@ class ProbabilityCalculator:
             keybert_model: Model name for KeyBERT keyword extraction
             calculation_mode: Calculation mode (st_baseline, jina_mixed, jina_bag_of_words, jina_full_text)
             vector_store: Optional PostgreSQL vector store for embedding caching
+            use_keybert: Whether to use KeyBERT keyword extraction (False = direct cosine only)
         """
         self.keybert_calc = KeyBERTSimilarityCalculator(
             topics=topics,
@@ -36,6 +38,7 @@ class ProbabilityCalculator:
             keybert_model=keybert_model,
             calculation_mode=calculation_mode,
             vector_store=vector_store,
+            use_keybert=use_keybert,
         )
 
     def calculate_probability(

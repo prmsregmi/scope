@@ -31,6 +31,7 @@ class KeyBERTSimilarityCalculator:
         keybert_model: str = "all-MiniLM-L12-v2",
         calculation_mode: str = "jina_mixed",
         vector_store: Optional["VectorStore"] = None,
+        use_keybert: bool = True,
     ) -> None:
         """Initialize KeyBERT similarity calculator.
 
@@ -49,11 +50,13 @@ class KeyBERTSimilarityCalculator:
         self.embedding_provider = embedding_provider
         self.calculation_mode = calculation_mode
         self.vector_store = vector_store
+        self.use_keybert = use_keybert
 
-        # Initialize KeyBERT for keyword extraction
-        # Note: KeyBERT internally uses SentenceTransformers for keyword extraction
-        # But we'll use the provided embedding_provider (possibly Jina) for final similarity
-        self.keybert = KeyBERT(keybert_model)
+        # Initialize KeyBERT for keyword extraction (skip if disabled)
+        if self.use_keybert:
+            self.keybert = KeyBERT(keybert_model)
+        else:
+            self.keybert = None
 
         # Cache for embeddings (in-memory, used when vector_store is not available)
         self._embedding_cache: dict[str, list[float]] = {}
@@ -178,11 +181,16 @@ class KeyBERTSimilarityCalculator:
             List of probabilities for each topic (sums to 1.0)
         """
         # Create cache key (include mode to avoid cache collision)
-        cache_key = (self.calculation_mode, original_text, tuple(cleaned_word_list))
+        mode_key = self.calculation_mode if self.use_keybert else "no_keybert"
+        cache_key = (mode_key, original_text, tuple(cleaned_word_list))
         if cache_key in self._probability_cache:
             self._cache_hits += 1
             return self._probability_cache[cache_key]
         self._cache_misses += 1
+
+        # Direct cosine similarity mode (no KeyBERT)
+        if not self.use_keybert:
+            return self._calculate_direct_cosine(original_text, cache_key)
 
         # Extract keywords from ORIGINAL text (not preprocessed)
         # This preserves context for better keyword extraction
@@ -291,6 +299,27 @@ class KeyBERTSimilarityCalculator:
         self._probability_cache[cache_key] = prob_list
 
         return prob_list
+
+    def _calculate_direct_cosine(
+        self,
+        original_text: str,
+        cache_key: tuple,
+    ) -> list[float]:
+        """Calculate topic probabilities using direct cosine similarity (no KeyBERT).
+
+        Embeds the original text and computes cosine similarity against each topic embedding,
+        then applies softmax normalization.
+        """
+        t1 = time.perf_counter()
+        text_embedding = self._get_embedding(original_text)
+        scores = [
+            self._cosine_similarity(text_embedding, self._topic_embeddings[i])
+            for i in range(len(self.topics))
+        ]
+        self._time_similarity += time.perf_counter() - t1
+        result = self._softmax(scores)
+        self._probability_cache[cache_key] = result
+        return result
 
     def _calculate_similarity_in_memory(
         self,

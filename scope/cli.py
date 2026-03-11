@@ -82,6 +82,13 @@ def parse_arguments() -> argparse.Namespace:
 
     # KeyBERT options
     parser.add_argument(
+        "--no-keybert",
+        action="store_true",
+        dest="no_keybert",
+        help="Disable KeyBERT keyword extraction; use direct cosine similarity only",
+    )
+
+    parser.add_argument(
         "--keybert-model",
         help="Model name for KeyBERT keyword extraction (default: all-MiniLM-L12-v2)",
     )
@@ -402,6 +409,7 @@ def run_analysis(config: ScopeConfig) -> None:
             embedding_provider=embedding_provider,
             keybert_model=config.keybert_model,
             vector_store=vector_store,
+            use_keybert=config.use_keybert,
         )
 
         # 5. Find contiguous blocks
@@ -540,6 +548,7 @@ def main() -> None:
         # Evaluation - disable if --no-evaluation flag is set
         "enable_evaluation": False if args.no_evaluation else None,
         "prefilter_sim_threshold": args.prefilter_sim_threshold,
+        "use_keybert": False if args.no_keybert else None,
         "jina_max_workers": args.jina_max_workers,
         # For boolean flags (store_true), only override if explicitly True
         # Otherwise, keep the env var value to avoid overriding True with False

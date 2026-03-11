@@ -135,6 +135,7 @@ class ScopeEvaluator:
                 embedding_provider=embedding_provider,
                 keybert_model=config.keybert_model,
                 calculation_mode=calculation_mode,
+                use_keybert=config.use_keybert,
             )
 
             times["embedding"] = time.time() - embedding_start
@@ -216,6 +217,7 @@ class ScopeEvaluator:
                     "start_date": start_date,
                     "end_date": end_date,
                     "num_topics": len(config.topics),
+                    "use_keybert": config.use_keybert,
                     "prefilter_sim_threshold": config.prefilter_sim_threshold,
                     "accuracy_fingerprint": accuracy_fingerprint,
                 },
