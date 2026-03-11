@@ -29,25 +29,9 @@ class JinaEmbeddingProvider(EmbeddingProvider):
         timeout: float = 30.0,
         parallel_requests: bool = False,
         max_workers: int = 5,
+        disk_cache: Optional["DiskEmbeddingCache"] = None,
     ) -> None:
-        """Initialize Jina embedding provider.
-
-        Args:
-            api_key: Jina API key (or use JINA_API_KEY env var)
-            model: Jina model name (default: jina-embeddings-v3)
-            task: Task type (default: text-matching)
-            dimensions: Output embedding dimensions (default: 384 to match SentenceTransformers)
-            base_url: API endpoint URL
-            max_retries: Maximum number of retry attempts
-            timeout: Request timeout in seconds
-            parallel_requests: Enable parallel API requests for batches (default: False)
-            max_workers: Maximum number of parallel workers (default: 5)
-
-        Raises:
-            ImportError: If httpx is not installed
-            ValueError: If API key is not provided
-        """
-        super().__init__()
+        super().__init__(disk_cache=disk_cache)
 
         if httpx is None:
             raise ImportError(
@@ -71,17 +55,6 @@ class JinaEmbeddingProvider(EmbeddingProvider):
         self.max_workers = max_workers
 
     def _make_request(self, texts: list[str]) -> dict:
-        """Make API request to Jina.
-
-        Args:
-            texts: List of texts to embed
-
-        Returns:
-            API response dictionary
-
-        Raises:
-            httpx.HTTPError: If request fails after all retries
-        """
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
@@ -94,7 +67,6 @@ class JinaEmbeddingProvider(EmbeddingProvider):
             "task": self.task,
         }
 
-        # Add dimensions if specified
         if self.dimensions is not None:
             payload["dimensions"] = self.dimensions
 
@@ -113,8 +85,8 @@ class JinaEmbeddingProvider(EmbeddingProvider):
 
             except httpx.HTTPStatusError as e:
                 last_exception = e
-                if e.response.status_code == 429:  # Rate limit
-                    wait_time = 2 ** attempt  # Exponential backoff
+                if e.response.status_code == 429:
+                    wait_time = 2 ** attempt
                     time.sleep(wait_time)
                     continue
                 else:
@@ -132,108 +104,38 @@ class JinaEmbeddingProvider(EmbeddingProvider):
         if last_exception:
             raise last_exception
 
-    def encode(self, text: str) -> np.ndarray:
-        """Generate embedding for a single text.
-
-        Args:
-            text: Input text string
-
-        Returns:
-            Embedding vector as numpy array
-        """
-        # Check cache first
-        if text in self._cache:
-            return self._cache[text]
-
-        # Make API request
+    def _encode_impl(self, text: str) -> np.ndarray:
         result = self._make_request([text])
-        embedding = np.array(result["data"][0]["embedding"])
+        return np.array(result["data"][0]["embedding"])
 
-        # Cache the result
-        self._cache[text] = embedding
+    def _encode_batch_impl(self, texts: list[str], batch_size: int = 100) -> np.ndarray:
+        embeddings: list[tuple[int, np.ndarray]] = []
 
-        return embedding
-
-    def _make_request_batch(self, batch_data: tuple) -> tuple:
-        """Make a single batch request (for parallel processing).
-
-        Args:
-            batch_data: Tuple of (batch_texts, batch_indices, batch_start_index)
-
-        Returns:
-            Tuple of (batch_indices, embeddings)
-        """
-        batch_texts, batch_indices, _ = batch_data
-        result = self._make_request(batch_texts)
-
-        batch_embeddings = []
-        for text, data in zip(batch_texts, result["data"]):
-            embedding = np.array(data["embedding"])
-            self._cache[text] = embedding
-            batch_embeddings.append(embedding)
-
-        return batch_indices, batch_embeddings
-
-    def encode_batch(self, texts: list[str], batch_size: int = 100) -> np.ndarray:
-        """Generate embeddings for multiple texts with batching.
-
-        Args:
-            texts: List of input text strings
-            batch_size: Maximum number of texts per API request
-
-        Returns:
-            Array of embedding vectors
-        """
-        embeddings = []
-        uncached_texts = []
-        uncached_indices = []
-
-        # Separate cached and uncached texts
-        for i, text in enumerate(texts):
-            if text in self._cache:
-                embeddings.append((i, self._cache[text]))
-            else:
-                uncached_texts.append(text)
-                uncached_indices.append(i)
-
-        if not uncached_texts:
-            # All cached, return immediately
-            embeddings.sort(key=lambda x: x[0])
-            return np.array([emb for _, emb in embeddings])
-
-        # Process uncached texts in batches
-        if self.parallel_requests and len(uncached_texts) > batch_size:
-            # Parallel processing for multiple batches
+        if self.parallel_requests and len(texts) > batch_size:
             batches = []
-            for i in range(0, len(uncached_texts), batch_size):
-                batch = uncached_texts[i:i + batch_size]
-                batch_indices = uncached_indices[i:i + batch_size]
-                batches.append((batch, batch_indices, i))
+            for i in range(0, len(texts), batch_size):
+                batch = texts[i:i + batch_size]
+                batch_indices = list(range(i, i + len(batch)))
+                batches.append((batch, batch_indices))
 
-            # Process batches in parallel
             with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
-                futures = [executor.submit(self._make_request_batch, batch_data)
-                          for batch_data in batches]
-
+                futures = {
+                    executor.submit(self._make_request, batch): (batch, indices)
+                    for batch, indices in batches
+                }
                 for future in as_completed(futures):
-                    batch_indices, batch_embeddings = future.result()
-                    for idx, emb in zip(batch_indices, batch_embeddings):
-                        embeddings.append((idx, emb))
+                    batch, indices = futures[future]
+                    result = future.result()
+                    for idx, data in zip(indices, result["data"]):
+                        embeddings.append((idx, np.array(data["embedding"])))
         else:
-            # Sequential processing
-            for i in range(0, len(uncached_texts), batch_size):
-                batch = uncached_texts[i:i + batch_size]
-                batch_indices = uncached_indices[i:i + batch_size]
-
-                # Make API request
+            offset = 0
+            for i in range(0, len(texts), batch_size):
+                batch = texts[i:i + batch_size]
                 result = self._make_request(batch)
+                for j, data in enumerate(result["data"]):
+                    embeddings.append((offset + j, np.array(data["embedding"])))
+                offset += len(batch)
 
-                # Cache and store results
-                for j, (text, data) in enumerate(zip(batch, result["data"])):
-                    embedding = np.array(data["embedding"])
-                    self._cache[text] = embedding
-                    embeddings.append((batch_indices[j], embedding))
-
-        # Sort by original order and extract embeddings
         embeddings.sort(key=lambda x: x[0])
         return np.array([emb for _, emb in embeddings])

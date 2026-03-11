@@ -11,12 +11,27 @@ from tqdm import tqdm
 
 from scope.analysis import ContiguousBlockFinder, SegmentProcessor
 from scope.config import ScopeConfig
-from scope.embeddings import get_embedding_provider
+from scope.embeddings import DiskEmbeddingCache, get_embedding_provider
 from scope.evaluation import ScopeEvaluator
 from scope.io import DatasetLoader, ResultWriter
 from scope.modeling import ProbabilityCalculator
 from scope.preprocessing import TextCleaner
 from scope.utils import get_logger, setup_logging
+
+
+def _resolve_calculation_mode(config: ScopeConfig) -> str:
+    """Derive concrete calculation_mode from config when set to 'auto'."""
+    if config.calculation_mode != "auto":
+        return config.calculation_mode
+    if config.embedding_provider == "jina":
+        return "jina_mixed"
+    return "st_baseline"
+
+
+def _create_disk_cache(config: ScopeConfig, model_name: str) -> DiskEmbeddingCache | None:
+    if not config.enable_disk_cache:
+        return None
+    return DiskEmbeddingCache(cache_dir=config.cache_dir, model_name=model_name)
 
 
 def parse_arguments() -> argparse.Namespace:
@@ -166,6 +181,28 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument(
         "--postgres-password",
         help="PostgreSQL password",
+    )
+
+    # Disk cache options
+    parser.add_argument(
+        "--cache-dir",
+        default=None,
+        help="Directory for disk embedding cache (default: .scope_cache)",
+    )
+
+    parser.add_argument(
+        "--no-cache",
+        action="store_true",
+        help="Disable disk embedding cache",
+    )
+
+    # Calculation mode
+    parser.add_argument(
+        "--mode",
+        dest="calculation_mode",
+        choices=["auto", "st_baseline", "jina_mixed", "jina_bag_of_words", "jina_full_text", "hybrid"],
+        default=None,
+        help="Calculation mode (default: auto — derives from embedding provider)",
     )
 
     # Pre-filter option
@@ -383,14 +420,26 @@ def run_analysis(config: ScopeConfig) -> None:
             organize_data_by_user_and_hour(df, text_cleaner, date_list, logger)
         )
 
-        # 3. Get embedding provider (Jina or SentenceTransformers)
+        # 3. Resolve calculation mode and create disk cache
+        calc_mode = _resolve_calculation_mode(config)
+        logger.info(f"Calculation mode: {calc_mode}")
+
+        # Determine primary model name for disk cache key
+        primary_model = config.embedding_model or (
+            "jina-embeddings-v3" if config.embedding_provider == "jina" else "all-MiniLM-L12-v2"
+        )
+        disk_cache = _create_disk_cache(config, primary_model)
+        if disk_cache:
+            logger.info(f"Disk cache: {disk_cache.stats()['path']} ({disk_cache.stats()['size']} cached)")
+
+        # 3b. Get embedding provider
         logger.info(f"Initializing embedding provider: {config.embedding_provider}")
         provider_kwargs = {
             "model": config.embedding_model,
             "api_key": config.jina_api_key,
+            "disk_cache": disk_cache,
         }
 
-        # Add parallel request parameters for JINA
         if config.embedding_provider == "jina":
             provider_kwargs["parallel_requests"] = config.jina_parallel_requests
             provider_kwargs["max_workers"] = config.jina_max_workers
@@ -402,14 +451,27 @@ def run_analysis(config: ScopeConfig) -> None:
             **provider_kwargs
         )
 
+        # 3c. Create keyword provider for hybrid mode (ST for keywords, Jina for full-text)
+        keyword_provider = None
+        if calc_mode == "hybrid":
+            st_cache = _create_disk_cache(config, config.keybert_model)
+            keyword_provider = get_embedding_provider(
+                "sentence-transformers",
+                model=config.keybert_model,
+                disk_cache=st_cache,
+            )
+            logger.info(f"Hybrid mode: Jina for full-text, ST ({config.keybert_model}) for keywords")
+
         # 4. Initialize Probability Calculator (KeyBERT + Cosine Similarity)
         logger.info("Setting up KeyBERT + Cosine Similarity probability calculator...")
         prob_calc = ProbabilityCalculator(
             topics=config.topics,
             embedding_provider=embedding_provider,
             keybert_model=config.keybert_model,
+            calculation_mode=calc_mode,
             vector_store=vector_store,
             use_keybert=config.use_keybert,
+            keyword_provider=keyword_provider,
         )
 
         # 5. Find contiguous blocks
@@ -457,6 +519,13 @@ def run_analysis(config: ScopeConfig) -> None:
                 config.probability_threshold,
             )
             logger.info(f"Summary written to {summary_path}")
+
+        # Flush disk caches
+        if disk_cache:
+            disk_cache.flush()
+            logger.info(f"Disk cache stats: {disk_cache.stats()}")
+        if keyword_provider and keyword_provider.disk_cache:
+            keyword_provider.disk_cache.flush()
 
         wall_time = time.time() - start_time
         logger.info(f"Analysis complete in {wall_time:.2f} seconds")
@@ -550,6 +619,9 @@ def main() -> None:
         "prefilter_sim_threshold": args.prefilter_sim_threshold,
         "use_keybert": False if args.no_keybert else None,
         "jina_max_workers": args.jina_max_workers,
+        "cache_dir": args.cache_dir,
+        "enable_disk_cache": False if args.no_cache else None,
+        "calculation_mode": args.calculation_mode,
         # For boolean flags (store_true), only override if explicitly True
         # Otherwise, keep the env var value to avoid overriding True with False
         "use_postgres": args.use_postgres if args.use_postgres else None,

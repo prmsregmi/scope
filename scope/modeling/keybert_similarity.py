@@ -1,7 +1,6 @@
 """KeyBERT-based keyword extraction and similarity calculation."""
 
 import logging
-import math
 import time
 from typing import Optional
 
@@ -32,6 +31,7 @@ class KeyBERTSimilarityCalculator:
         calculation_mode: str = "jina_mixed",
         vector_store: Optional["VectorStore"] = None,
         use_keybert: bool = True,
+        keyword_provider: Optional[EmbeddingProvider] = None,
     ) -> None:
         """Initialize KeyBERT similarity calculator.
 
@@ -44,10 +44,13 @@ class KeyBERTSimilarityCalculator:
                 - 'jina_mixed': Use KeyBERT relevance (ST) + similarity (JINA)
                 - 'jina_bag_of_words': Use JINA for both, document = bag of words
                 - 'jina_full_text': Use JINA for both, document = original text
+                - 'hybrid': Jina for full-text embeddings, ST for keyword embeddings
             vector_store: Optional PostgreSQL vector store for embedding caching and fast similarity
+            keyword_provider: Optional separate embedding provider for keyword embeddings (hybrid mode)
         """
         self.topics = topics
         self.embedding_provider = embedding_provider
+        self.keyword_provider = keyword_provider
         self.calculation_mode = calculation_mode
         self.vector_store = vector_store
         self.use_keybert = use_keybert
@@ -63,6 +66,8 @@ class KeyBERTSimilarityCalculator:
 
         # Cache for topic embeddings (computed once)
         self._topic_embeddings: Optional[list[list[float]]] = None
+        # In hybrid mode, primary (Jina) topic embeddings for prefilter/direct cosine
+        self._topic_embeddings_primary: Optional[list[list[float]]] = None
 
         # Cache for probability calculations
         self._probability_cache: dict[tuple, list[float]] = {}
@@ -77,65 +82,80 @@ class KeyBERTSimilarityCalculator:
         self._compute_topic_embeddings()
 
     def _compute_topic_embeddings(self) -> None:
-        """Pre-compute embeddings for all topics."""
+        """Pre-compute embeddings for all topics.
+
+        In hybrid mode, computes topic embeddings in BOTH spaces:
+        - _topic_embeddings: keyword_provider (ST) space for keyword↔topic similarity
+        - _topic_embeddings_primary: embedding_provider (Jina) space for prefilter/direct cosine
+        """
         self._topic_embeddings = []
+
+        if self.calculation_mode == "hybrid" and self.keyword_provider is not None:
+            # Hybrid: keyword-space topic embeddings (ST)
+            for topic in self.topics:
+                embedding = self.keyword_provider.encode(topic)
+                self._topic_embeddings.append(embedding)
+
+            # Primary (Jina) topic embeddings for prefilter and direct cosine
+            self._topic_embeddings_primary = []
+            for topic in self.topics:
+                embedding = self.embedding_provider.encode(topic)
+                self._topic_embeddings_primary.append(embedding)
+            return
 
         # If vector store is available, check if topics are already stored
         if self.vector_store:
             stored_topics = self.vector_store.get_topic_embeddings()
 
-            # Check if all topics are already in the database
             if all(topic in stored_topics for topic in self.topics):
-                # Use stored embeddings
                 for topic in self.topics:
                     self._topic_embeddings.append(stored_topics[topic].tolist())
                 return
 
-            # Otherwise, compute and store new embeddings
             topic_embeddings_dict = {}
             for topic in self.topics:
                 embedding = self.embedding_provider.encode(topic)
                 self._topic_embeddings.append(embedding)
-                # Convert to numpy for storage
                 topic_embeddings_dict[topic] = np.array(embedding)
 
-            # Store in PostgreSQL
             self.vector_store.store_topic_embeddings(topic_embeddings_dict)
         else:
-            # No vector store, compute normally
             for topic in self.topics:
                 embedding = self.embedding_provider.encode(topic)
                 self._topic_embeddings.append(embedding)
 
-    def _get_embedding(self, text: str) -> list[float]:
+    def _get_embedding(self, text: str, use_keyword_provider: bool = False) -> list[float]:
         """Get embedding for text with caching.
-
-        Checks PostgreSQL first if available, then in-memory cache, then computes.
 
         Args:
             text: Text to embed
+            use_keyword_provider: If True and in hybrid mode, use keyword_provider (ST)
 
         Returns:
             Embedding vector
         """
-        # Check in-memory cache first (fastest)
-        if text in self._embedding_cache:
-            return self._embedding_cache[text]
+        # Select provider: keyword_provider for keyword embeddings in hybrid mode
+        provider = self.embedding_provider
+        if use_keyword_provider and self.keyword_provider is not None:
+            provider = self.keyword_provider
 
-        # Check PostgreSQL if available
-        if self.vector_store:
+        # Use a provider-specific cache key to avoid cross-space collisions
+        cache_key = f"kw:{text}" if (use_keyword_provider and self.keyword_provider) else text
+
+        if cache_key in self._embedding_cache:
+            return self._embedding_cache[cache_key]
+
+        if self.vector_store and not use_keyword_provider:
             stored = self.vector_store.get_keyword_embeddings([text])
             if stored.get(text) is not None:
                 embedding = stored[text].tolist()
-                self._embedding_cache[text] = embedding
+                self._embedding_cache[cache_key] = embedding
                 return embedding
 
-        # Compute embedding if not cached
-        embedding = self.embedding_provider.encode(text)
-        self._embedding_cache[text] = embedding
+        embedding = provider.encode(text)
+        self._embedding_cache[cache_key] = embedding
 
-        # Store in PostgreSQL if available
-        if self.vector_store:
+        if self.vector_store and not use_keyword_provider:
             self.vector_store.store_keyword_embeddings({text: np.array(embedding)})
 
         return embedding
@@ -235,9 +255,10 @@ class KeyBERTSimilarityCalculator:
         # Extract keyword texts for batch processing
         keywords_list = [keyword for keyword, _ in keyword_ranks]
 
-        # Ensure all keyword embeddings are computed/cached
+        # In hybrid mode, embed keywords using keyword_provider (ST)
+        use_kw = self.calculation_mode == "hybrid"
         for keyword in keywords_list:
-            self._get_embedding(keyword)
+            self._get_embedding(keyword, use_keyword_provider=use_kw)
 
         # Use PostgreSQL for batch similarity calculation if available
         if self.vector_store:
@@ -307,13 +328,14 @@ class KeyBERTSimilarityCalculator:
     ) -> list[float]:
         """Calculate topic probabilities using direct cosine similarity (no KeyBERT).
 
-        Embeds the original text and computes cosine similarity against each topic embedding,
-        then applies softmax normalization.
+        In hybrid mode, uses primary (Jina) embeddings for text and topic comparison.
         """
         t1 = time.perf_counter()
         text_embedding = self._get_embedding(original_text)
+        # Use primary topic embeddings (Jina) in hybrid mode if available
+        topic_embs = self._topic_embeddings_primary if self._topic_embeddings_primary is not None else self._topic_embeddings
         scores = [
-            self._cosine_similarity(text_embedding, self._topic_embeddings[i])
+            self._cosine_similarity(text_embedding, topic_embs[i])
             for i in range(len(self.topics))
         ]
         self._time_similarity += time.perf_counter() - t1
@@ -329,45 +351,30 @@ class KeyBERTSimilarityCalculator:
     ) -> list[float]:
         """Calculate similarities in-memory (original method).
 
-        Args:
-            keyword_ranks: List of (keyword, relevance_score) tuples
-            cleaned_word_list: Cleaned words for frequency counting
-            document_embedding: Document embedding (for modes 3 & 4)
-
-        Returns:
-            List of weighted scores for each topic
+        In hybrid mode, keyword embeddings and topic embeddings are both in ST space
+        (_topic_embeddings), ensuring consistent similarity computation.
         """
         prob_list = [0.0 for _ in range(len(self.topics))]
+        use_kw = self.calculation_mode == "hybrid"
 
         for keyword, keybert_relevance in keyword_ranks:
-            # Get embedding for this keyword
-            keyword_embedding = self._get_embedding(keyword)
-
-            # Calculate word frequency from cleaned word list
+            keyword_embedding = self._get_embedding(keyword, use_keyword_provider=use_kw)
             word_frequency = cleaned_word_list.count(keyword.lower())
 
-            # Determine keyword-document relevance based on mode
-            if self.calculation_mode in ['st_baseline', 'jina_mixed']:
-                # Use KeyBERT's relevance score
+            if self.calculation_mode in ['st_baseline', 'jina_mixed', 'hybrid']:
                 keyword_doc_relevance = keybert_relevance
-            else:  # jina_bag_of_words or jina_full_text
-                # Calculate relevance in JINA embedding space
+            else:
                 keyword_doc_relevance = self._cosine_similarity(
                     keyword_embedding,
                     document_embedding
                 )
 
-            # Calculate cosine similarity with each topic
             for topic_idx in range(len(self.topics)):
                 topic_embedding = self._topic_embeddings[topic_idx]
-
-                # Cosine similarity between keyword and topic
                 keyword_topic_similarity = self._cosine_similarity(
                     keyword_embedding,
                     topic_embedding
                 )
-
-                # Weight by relevance and frequency
                 weighted_score = keyword_topic_similarity * keyword_doc_relevance * word_frequency
                 prob_list[topic_idx] += weighted_score
 
