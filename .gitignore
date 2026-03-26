@@ -67,3 +67,6 @@ Thumbs.db
 
 # uv
 .uv/
+
+# SCOPE embedding cache
+.scope_cache/

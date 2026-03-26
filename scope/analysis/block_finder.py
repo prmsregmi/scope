@@ -88,8 +88,10 @@ class ContiguousBlockFinder:
         norms = np.where(norms == 0, 1.0, norms)
         hour_embs_norm = hour_embs / norms  # (H, D)
 
-        # Build topic embedding matrix (T, D), already unit-normalized by the model
-        topic_embs = np.array(self.prob_calc.keybert_calc._topic_embeddings)  # (T, D)
+        # In hybrid mode, use primary (Jina) topic embeddings for prefilter similarity
+        primary = self.prob_calc.keybert_calc._topic_embeddings_primary
+        topic_emb_source = primary if primary is not None else self.prob_calc.keybert_calc._topic_embeddings
+        topic_embs = np.array(topic_emb_source)  # (T, D)
         t_norms = np.linalg.norm(topic_embs, axis=1, keepdims=True)
         t_norms = np.where(t_norms == 0, 1.0, t_norms)
         topic_embs_norm = topic_embs / t_norms  # (T, D)

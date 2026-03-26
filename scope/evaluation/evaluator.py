@@ -13,7 +13,7 @@ from tqdm import tqdm
 
 from scope.analysis import ContiguousBlockFinder, SegmentProcessor
 from scope.config import ScopeConfig
-from scope.embeddings import get_embedding_provider
+from scope.embeddings import DiskEmbeddingCache, get_embedding_provider
 from scope.io import DatasetLoader
 from scope.modeling import ProbabilityCalculator
 from scope.preprocessing import TextCleaner
@@ -109,13 +109,27 @@ class ScopeEvaluator:
 
             times["preprocessing"] = time.time() - preprocess_start
 
-            # 3. Get embedding provider
+            # 3. Get embedding provider with disk cache
             self.logger.info(f"Initializing embedding provider: {config.embedding_provider}")
             embedding_start = time.time()
+
+            # Resolve calculation mode
+            calc_mode = config.calculation_mode
+            if calc_mode == "auto":
+                calc_mode = "jina_mixed" if config.embedding_provider == "jina" else "st_baseline"
+
+            # Create disk cache
+            primary_model = config.embedding_model or (
+                "jina-embeddings-v3" if config.embedding_provider == "jina" else "all-MiniLM-L12-v2"
+            )
+            disk_cache = None
+            if config.enable_disk_cache:
+                disk_cache = DiskEmbeddingCache(cache_dir=config.cache_dir, model_name=primary_model)
 
             provider_kwargs = dict(
                 model=config.embedding_model,
                 api_key=config.jina_api_key,
+                disk_cache=disk_cache,
             )
             if config.embedding_provider == "jina":
                 provider_kwargs["parallel_requests"] = config.jina_parallel_requests
@@ -126,16 +140,26 @@ class ScopeEvaluator:
                 **provider_kwargs,
             )
 
-            # 4. Initialize Probability Calculator
-            # Check if calculation_mode is set (for mode comparison tests)
-            calculation_mode = getattr(config, '_calculation_mode', 'jina_mixed')
+            # Create keyword provider for hybrid mode
+            keyword_provider = None
+            if calc_mode == "hybrid":
+                st_cache = None
+                if config.enable_disk_cache:
+                    st_cache = DiskEmbeddingCache(cache_dir=config.cache_dir, model_name=config.keybert_model)
+                keyword_provider = get_embedding_provider(
+                    "sentence-transformers",
+                    model=config.keybert_model,
+                    disk_cache=st_cache,
+                )
 
+            # 4. Initialize Probability Calculator
             prob_calc = ProbabilityCalculator(
                 topics=config.topics,
                 embedding_provider=embedding_provider,
                 keybert_model=config.keybert_model,
-                calculation_mode=calculation_mode,
+                calculation_mode=calc_mode,
                 use_keybert=config.use_keybert,
+                keyword_provider=keyword_provider,
             )
 
             times["embedding"] = time.time() - embedding_start
@@ -226,6 +250,12 @@ class ScopeEvaluator:
                 timestamp=datetime.now().isoformat(),
                 accuracy=accuracy,
             )
+
+            # Flush disk caches
+            if disk_cache:
+                disk_cache.flush()
+            if keyword_provider and keyword_provider.disk_cache:
+                keyword_provider.disk_cache.flush()
 
             # Save results
             self._save_results(metrics, segments)

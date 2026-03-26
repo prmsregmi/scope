@@ -21,6 +21,7 @@ class ProbabilityCalculator:
         calculation_mode: str = "jina_mixed",
         vector_store: Optional["VectorStore"] = None,
         use_keybert: bool = True,
+        keyword_provider: Optional[EmbeddingProvider] = None,
     ) -> None:
         """Initialize probability calculator.
 
@@ -28,9 +29,10 @@ class ProbabilityCalculator:
             topics: List of topic names
             embedding_provider: Provider for embeddings (Jina or SentenceTransformers)
             keybert_model: Model name for KeyBERT keyword extraction
-            calculation_mode: Calculation mode (st_baseline, jina_mixed, jina_bag_of_words, jina_full_text)
+            calculation_mode: Calculation mode (st_baseline, jina_mixed, hybrid, etc.)
             vector_store: Optional PostgreSQL vector store for embedding caching
             use_keybert: Whether to use KeyBERT keyword extraction (False = direct cosine only)
+            keyword_provider: Optional separate provider for keyword embeddings (hybrid mode)
         """
         self.keybert_calc = KeyBERTSimilarityCalculator(
             topics=topics,
@@ -39,6 +41,7 @@ class ProbabilityCalculator:
             calculation_mode=calculation_mode,
             vector_store=vector_store,
             use_keybert=use_keybert,
+            keyword_provider=keyword_provider,
         )
 
     def calculate_probability(

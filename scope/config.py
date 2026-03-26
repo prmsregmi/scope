@@ -57,6 +57,11 @@ class ScopeConfig:
     enable_lemmatization: bool = True
     verbose: bool = True
     include_summary: bool = True
+    # Disk embedding cache
+    cache_dir: str = ".scope_cache"
+    enable_disk_cache: bool = True
+    # Calculation mode: auto, st_baseline, jina_mixed, hybrid, etc.
+    calculation_mode: str = "auto"
     # Evaluation
     enable_evaluation: bool = True
     labeled_test_data: Optional[str] = None
@@ -79,7 +84,8 @@ class ScopeConfig:
         return (
             f"{self.embedding_provider}|{self.embedding_model}|"
             f"{self.use_keybert}|{self.keybert_model}|{','.join(sorted(self.topics))}|"
-            f"{self.enable_spell_check}|{self.enable_lemmatization}"
+            f"{self.enable_spell_check}|{self.enable_lemmatization}|"
+            f"{self.calculation_mode}"
         )
 
     def __post_init__(self) -> None:
@@ -109,6 +115,23 @@ class ScopeConfig:
                 f"Unknown embedding provider: {self.embedding_provider}. "
                 "Must be 'sentence-transformers' or 'jina'"
             )
+
+        # Validate calculation mode
+        valid_modes = ["auto", "st_baseline", "jina_mixed", "jina_bag_of_words", "jina_full_text", "hybrid"]
+        if self.calculation_mode not in valid_modes:
+            raise ValueError(
+                f"Unknown calculation mode: {self.calculation_mode}. "
+                f"Must be one of {valid_modes}"
+            )
+
+        # Hybrid mode requires Jina API key for full-text embeddings
+        if self.calculation_mode == "hybrid" and not self.jina_api_key:
+            self.jina_api_key = os.getenv("JINA_API_KEY")
+            if not self.jina_api_key:
+                raise ValueError(
+                    "Hybrid mode requires Jina API key for full-text embeddings. "
+                    "Set JINA_API_KEY environment variable or pass --jina-api-key"
+                )
 
     @classmethod
     def from_env(cls, dataset_path: Optional[str] = None) -> "ScopeConfig":
