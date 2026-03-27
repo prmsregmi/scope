@@ -62,6 +62,18 @@ class ScopeConfig:
     enable_disk_cache: bool = True
     # Calculation mode: auto, st_baseline, jina_mixed, hybrid, etc.
     calculation_mode: str = "auto"
+    # Unsupervised topic discovery
+    discover_topics: bool = False
+    clustering_algorithm: str = "hdbscan"
+    hdbscan_min_cluster_size: int = 5
+    hdbscan_min_samples: int = 3
+    kmeans_n_clusters: Optional[int] = None
+    umap_n_components: int = 5
+    umap_n_neighbors: int = 15
+    umap_min_dist: float = 0.0
+    cluster_label_top_n: int = 5
+    map_to_predefined: bool = False
+    map_similarity_threshold: float = 0.5
     # Evaluation
     enable_evaluation: bool = True
     labeled_test_data: Optional[str] = None
@@ -114,6 +126,14 @@ class ScopeConfig:
             raise ValueError(
                 f"Unknown embedding provider: {self.embedding_provider}. "
                 "Must be 'sentence-transformers' or 'jina'"
+            )
+
+        # Validate clustering algorithm
+        valid_clustering = ["hdbscan", "kmeans"]
+        if self.clustering_algorithm not in valid_clustering:
+            raise ValueError(
+                f"Unknown clustering algorithm: {self.clustering_algorithm}. "
+                f"Must be one of {valid_clustering}"
             )
 
         # Validate calculation mode

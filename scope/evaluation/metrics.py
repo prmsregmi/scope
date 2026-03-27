@@ -126,6 +126,50 @@ class AccuracyMetrics:
 
 
 @dataclass
+class ClusteringMetrics:
+    """Metrics for unsupervised topic discovery."""
+
+    n_clusters: int
+    noise_ratio: float
+    silhouette_score: float
+
+    # External metrics (require ground truth labels)
+    nmi: float | None = None
+    ari: float | None = None
+    v_measure: float | None = None
+
+    # Cluster purity (require ground truth)
+    mean_purity: float | None = None
+    high_purity_count: int | None = None
+    per_cluster_purity: dict[str, float] = field(default_factory=dict)
+
+    # Cluster size distribution
+    cluster_sizes: dict[str, int] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        """Convert to dictionary."""
+        result = {
+            "n_clusters": self.n_clusters,
+            "noise_ratio": round(self.noise_ratio, 4),
+            "silhouette_score": round(self.silhouette_score, 4),
+            "cluster_sizes": self.cluster_sizes,
+        }
+        if self.nmi is not None:
+            result["nmi"] = round(self.nmi, 4)
+        if self.ari is not None:
+            result["ari"] = round(self.ari, 4)
+        if self.v_measure is not None:
+            result["v_measure"] = round(self.v_measure, 4)
+        if self.mean_purity is not None:
+            result["mean_purity"] = round(self.mean_purity, 4)
+            result["high_purity_count"] = self.high_purity_count
+            result["per_cluster_purity"] = {
+                k: round(v, 4) for k, v in self.per_cluster_purity.items()
+            }
+        return result
+
+
+@dataclass
 class EvaluationMetrics:
     """Complete evaluation metrics for a SCOPE run."""
 
@@ -137,6 +181,7 @@ class EvaluationMetrics:
 
     timestamp: str = ""  # Timestamp of the evaluation
     accuracy: AccuracyMetrics | None = None  # Optional accuracy metrics
+    clustering: ClusteringMetrics | None = None  # Optional clustering metrics
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary."""
@@ -149,6 +194,8 @@ class EvaluationMetrics:
         }
         if self.accuracy:
             result["accuracy"] = self.accuracy.to_dict()
+        if self.clustering:
+            result["clustering"] = self.clustering.to_dict()
         return result
 
     def summary_str(self) -> str:
@@ -222,6 +269,20 @@ class EvaluationMetrics:
                     prec = self.accuracy.per_topic_precision.get(topic, 0)
                     rec = self.accuracy.per_topic_recall.get(topic, 0)
                     lines.append(f"    {topic}: Acc={acc*100:.1f}% P={prec:.3f} R={rec:.3f} F1={f1:.3f}")
+
+        if self.clustering:
+            lines.append("")
+            lines.append("CLUSTERING:")
+            lines.append(f"  Clusters Found: {self.clustering.n_clusters}")
+            lines.append(f"  Noise Ratio: {self.clustering.noise_ratio * 100:.1f}%")
+            lines.append(f"  Silhouette Score: {self.clustering.silhouette_score:.4f}")
+            if self.clustering.nmi is not None:
+                lines.append(f"  NMI: {self.clustering.nmi:.4f}")
+                lines.append(f"  ARI: {self.clustering.ari:.4f}")
+                lines.append(f"  V-Measure: {self.clustering.v_measure:.4f}")
+            if self.clustering.mean_purity is not None:
+                lines.append(f"  Mean Purity: {self.clustering.mean_purity:.4f}")
+                lines.append(f"  High-Purity Clusters (>=0.7): {self.clustering.high_purity_count}")
 
         lines.append("")
         lines.append("=" * 70)

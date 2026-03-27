@@ -1,11 +1,16 @@
 """Process and format detected segments."""
 
+from __future__ import annotations
+
 from datetime import datetime, timedelta
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from tqdm import tqdm
 
-from scope.modeling.probability import ProbabilityCalculator
+if TYPE_CHECKING:
+    from scope.discovery.block_finder import ClusterBlockFinder
+    from scope.discovery.clusterer import ClusterResult
+    from scope.modeling.probability import ProbabilityCalculator
 
 
 class SegmentProcessor:
@@ -278,3 +283,61 @@ class SegmentProcessor:
                 chats.append(chat_line)
 
         return "\n".join(chats)
+
+    def process_cluster_segments(
+        self,
+        user_blocks: dict[str, dict[str, list[list[int]]]],
+        user_full_messages: dict[str, list[list[Any]]],
+        cluster_result: ClusterResult,
+        cluster_block_finder: ClusterBlockFinder,
+    ) -> list[dict]:
+        """Process cluster-based blocks into output format.
+
+        Same output schema as process_segments(), but uses cluster membership
+        probability instead of ProbabilityCalculator.
+        """
+        all_segments = []
+
+        total_blocks = sum(
+            len(blocks)
+            for topic_blocks in user_blocks.values()
+            for blocks in topic_blocks.values()
+        )
+
+        with tqdm(total=total_blocks, desc="Processing segments", unit="segment") as pbar:
+            for user, topic_blocks in user_blocks.items():
+                for topic, blocks in topic_blocks.items():
+                    for block in blocks:
+                        pbar.update(1)
+                        if not block:
+                            continue
+
+                        start_date, start_time, end_date, end_time, duration = (
+                            self._calculate_time_range(
+                                block, user, user_full_messages
+                            )
+                        )
+
+                        probability = cluster_block_finder.get_block_probabilities(
+                            cluster_result, user, block
+                        )
+
+                        chat_summary = self._aggregate_messages(
+                            block, user, user_full_messages
+                        )
+
+                        segment = {
+                            "User": user,
+                            "Start Date": start_date,
+                            "Start Time": start_time,
+                            "End Date": end_date,
+                            "End Time": end_time,
+                            "Time Duration": str(duration),
+                            "Topic": topic,
+                            "Probability": str(probability),
+                            "Chat Summary": chat_summary,
+                        }
+
+                        all_segments.append(segment)
+
+        return all_segments
