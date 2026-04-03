@@ -245,6 +245,61 @@ def parse_arguments() -> argparse.Namespace:
         help="Compare multiple evaluation runs (e.g., --compare-runs run1 run2 run3)",
     )
 
+    # Topic discovery (unsupervised mode)
+    discovery_group = parser.add_argument_group("topic discovery (unsupervised)")
+    discovery_group.add_argument(
+        "--discover-topics",
+        action="store_true",
+        dest="discover_topics",
+        help="Enable unsupervised topic discovery via embedding clustering",
+    )
+    discovery_group.add_argument(
+        "--clustering-algorithm",
+        dest="clustering_algorithm",
+        choices=["hdbscan", "kmeans"],
+        default=None,
+        help="Clustering algorithm (default: hdbscan)",
+    )
+    discovery_group.add_argument(
+        "--hdbscan-min-cluster-size",
+        type=int,
+        default=None,
+        help="HDBSCAN min_cluster_size (default: 5)",
+    )
+    discovery_group.add_argument(
+        "--hdbscan-min-samples",
+        type=int,
+        default=None,
+        help="HDBSCAN min_samples (default: 3)",
+    )
+    discovery_group.add_argument(
+        "--kmeans-k",
+        dest="kmeans_n_clusters",
+        type=int,
+        default=None,
+        help="Number of clusters for KMeans (required when --clustering-algorithm kmeans)",
+    )
+    discovery_group.add_argument(
+        "--umap-components",
+        dest="umap_n_components",
+        type=int,
+        default=None,
+        help="UMAP target dimensions (default: 5)",
+    )
+    discovery_group.add_argument(
+        "--umap-neighbors",
+        dest="umap_n_neighbors",
+        type=int,
+        default=None,
+        help="UMAP n_neighbors (default: 15)",
+    )
+    discovery_group.add_argument(
+        "--map-to-predefined",
+        action="store_true",
+        dest="map_to_predefined",
+        help="Map discovered clusters to predefined topic names via cosine similarity",
+    )
+
     # Version
     parser.add_argument(
         "--version",
@@ -588,6 +643,121 @@ def compare_evaluation_runs(run_names: list[str]) -> None:
     print("\nComparison saved to: results/evaluation/comparison.txt")
 
 
+def run_discovery(config: ScopeConfig) -> None:
+    """Run unsupervised topic discovery pipeline."""
+    from scope.discovery import ClusterBlockFinder, ClusterLabeler, TopicDiscoverer
+
+    logger = setup_logging(config.verbose)
+    start_time = time.time()
+
+    logger.info("Starting unsupervised topic discovery...")
+
+    # 1. Load dataset
+    logger.info(f"Loading dataset from {config.dataset_path}")
+    loader = DatasetLoader(config.dataset_path)
+    df = loader.load(config.start_date, config.end_date)
+    logger.info(f"Loaded {len(df)} messages")
+
+    if config.start_date and config.end_date:
+        start_date = config.start_date
+        end_date = config.end_date
+    else:
+        start_date, end_date = loader.get_date_range(df)
+
+    date_list = []
+    current = datetime.strptime(start_date, "%Y-%m-%d")
+    end = datetime.strptime(end_date, "%Y-%m-%d")
+    while current <= end:
+        date_list.append(current.strftime("%Y-%m-%d"))
+        current += timedelta(days=1)
+
+    # 2. Preprocess
+    text_cleaner = TextCleaner(
+        enable_spell_check=config.enable_spell_check,
+        enable_lemmatization=config.enable_lemmatization,
+    )
+    _, user_hourly_original, user_hourly_messages = (
+        organize_data_by_user_and_hour(df, text_cleaner, date_list, logger)
+    )
+
+    # 3. Init embedding provider
+    primary_model = config.embedding_model or (
+        "jina-embeddings-v3" if config.embedding_provider == "jina" else "all-MiniLM-L12-v2"
+    )
+    disk_cache = _create_disk_cache(config, primary_model)
+
+    provider_kwargs = {
+        "model": config.embedding_model,
+        "api_key": config.jina_api_key,
+        "disk_cache": disk_cache,
+    }
+    if config.embedding_provider == "jina":
+        provider_kwargs["parallel_requests"] = config.jina_parallel_requests
+        provider_kwargs["max_workers"] = config.jina_max_workers
+
+    embedding_provider = get_embedding_provider(
+        config.embedding_provider,
+        **provider_kwargs,
+    )
+
+    # 4. Discover topics
+    discoverer = TopicDiscoverer(
+        embedding_provider=embedding_provider,
+        algorithm=config.clustering_algorithm,
+        umap_n_components=config.umap_n_components,
+        umap_n_neighbors=config.umap_n_neighbors,
+        umap_min_dist=config.umap_min_dist,
+        hdbscan_min_cluster_size=config.hdbscan_min_cluster_size,
+        hdbscan_min_samples=config.hdbscan_min_samples,
+        kmeans_n_clusters=config.kmeans_n_clusters,
+    )
+    cluster_result = discoverer.fit(user_hourly_original)
+
+    # 5. Label clusters
+    labeler = ClusterLabeler(top_n=config.cluster_label_top_n)
+    cluster_labels = labeler.label_clusters(cluster_result)
+
+    if config.map_to_predefined:
+        predefined_map = labeler.map_to_predefined(
+            cluster_result, config.topics, embedding_provider,
+            config.map_similarity_threshold,
+        )
+        for cid, mapped_name in predefined_map.items():
+            if mapped_name:
+                cluster_labels[cid] = mapped_name
+
+    logger.info(f"Discovered {len(cluster_labels)} topics:")
+    for cid, label in sorted(cluster_labels.items()):
+        logger.info(f"  Cluster {cid}: {label}")
+
+    # 6. Find contiguous blocks
+    cluster_block_finder = ClusterBlockFinder()
+    user_blocks = cluster_block_finder.find_all_blocks(cluster_result, cluster_labels)
+
+    # 7. Process segments
+    processor = SegmentProcessor(date_list)
+    segments = processor.process_cluster_segments(
+        user_blocks, user_hourly_messages, cluster_result, cluster_block_finder,
+    )
+    logger.info(f"Found {len(segments)} segments")
+
+    # 8. Write results
+    logger.info(f"Writing results to {config.output_path}")
+    writer = ResultWriter(config.output_path)
+    writer.write(segments)
+
+    if config.include_summary:
+        wall_time = time.time() - start_time
+        summary_path = writer.write_summary(segments, wall_time, config.probability_threshold)
+        logger.info(f"Summary written to {summary_path}")
+
+    if disk_cache:
+        disk_cache.flush()
+        logger.info(f"Disk cache stats: {disk_cache.stats()}")
+
+    logger.info(f"Discovery complete in {time.time() - start_time:.2f} seconds")
+
+
 def main() -> None:
     """Main entry point for CLI."""
     args = parse_arguments()
@@ -624,6 +794,14 @@ def main() -> None:
         "calculation_mode": args.calculation_mode,
         # For boolean flags (store_true), only override if explicitly True
         # Otherwise, keep the env var value to avoid overriding True with False
+        "discover_topics": args.discover_topics if args.discover_topics else None,
+        "clustering_algorithm": args.clustering_algorithm,
+        "hdbscan_min_cluster_size": args.hdbscan_min_cluster_size,
+        "hdbscan_min_samples": args.hdbscan_min_samples,
+        "kmeans_n_clusters": args.kmeans_n_clusters,
+        "umap_n_components": args.umap_n_components,
+        "umap_n_neighbors": args.umap_n_neighbors,
+        "map_to_predefined": args.map_to_predefined if args.map_to_predefined else None,
         "use_postgres": args.use_postgres if args.use_postgres else None,
         "postgres_host": args.postgres_host if hasattr(args, "postgres_host") else None,
         "postgres_port": args.postgres_port if hasattr(args, "postgres_port") else None,
@@ -638,6 +816,11 @@ def main() -> None:
 
     # Merge CLI args (only non-None values override)
     config.merge_with_args(**cli_args)
+
+    # Handle discovery mode
+    if config.discover_topics and not config.enable_evaluation:
+        run_discovery(config)
+        return
 
     # Handle evaluation mode (enabled by default)
     if config.enable_evaluation:

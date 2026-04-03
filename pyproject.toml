@@ -31,11 +31,14 @@ sentence-transformers = [
 jina = [
     "httpx>=0.24.0",
 ]
+unsupervised = [
+    "umap-learn>=0.5.0",
+]
 dev = [
     "pytest>=7.4.0",
 ]
 all = [
-    "scope[sentence-transformers,jina,postgres,dev]",
+    "scope[sentence-transformers,jina,postgres,unsupervised,dev]",
 ]
 
 [project.scripts]

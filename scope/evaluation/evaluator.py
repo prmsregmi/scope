@@ -1,17 +1,22 @@
 """SCOPE evaluation framework."""
 
+from __future__ import annotations
+
 import json
 import re
 import time
 import tracemalloc
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any, Optional
 
 import pandas as pd
 from tqdm import tqdm
 
 from scope.analysis import ContiguousBlockFinder, SegmentProcessor
+
+if TYPE_CHECKING:
+    from scope.discovery.clusterer import ClusterResult
 from scope.config import ScopeConfig
 from scope.embeddings import DiskEmbeddingCache, get_embedding_provider
 from scope.io import DatasetLoader
@@ -19,7 +24,7 @@ from scope.modeling import ProbabilityCalculator
 from scope.preprocessing import TextCleaner
 from scope.utils import get_logger, setup_logging
 
-from .metrics import AccuracyMetrics, EvaluationMetrics, PerformanceMetrics, QualityMetrics
+from .metrics import AccuracyMetrics, ClusteringMetrics, EvaluationMetrics, PerformanceMetrics, QualityMetrics
 
 
 class ScopeEvaluator:
@@ -152,45 +157,89 @@ class ScopeEvaluator:
                     disk_cache=st_cache,
                 )
 
-            # 4. Initialize Probability Calculator
-            prob_calc = ProbabilityCalculator(
-                topics=config.topics,
-                embedding_provider=embedding_provider,
-                keybert_model=config.keybert_model,
-                calculation_mode=calc_mode,
-                use_keybert=config.use_keybert,
-                keyword_provider=keyword_provider,
-            )
-
             times["embedding"] = time.time() - embedding_start
 
             # 5. Find contiguous blocks and process segments
             self.logger.info("Running analysis...")
             analysis_start = time.time()
 
-            block_finder = ContiguousBlockFinder(
-                config.probability_threshold,
-                prob_calc,
-                prefilter_sim_threshold=getattr(config, 'prefilter_sim_threshold', 0.0),
-            )
+            cluster_result = None
+            clustering_metrics = None
 
-            user_blocks = block_finder.find_all_blocks(
-                user_hourly_texts,
-                user_hourly_original,
-                config.topics,
-            )
+            if config.discover_topics:
+                from scope.discovery import ClusterBlockFinder, ClusterLabeler, TopicDiscoverer
 
-            processor = SegmentProcessor(date_list)
-            segments = processor.process_segments(
-                user_blocks,
-                user_hourly_texts,
-                user_hourly_original,
-                user_hourly_messages,
-                prob_calc,
-            )
+                discoverer = TopicDiscoverer(
+                    embedding_provider=embedding_provider,
+                    algorithm=config.clustering_algorithm,
+                    umap_n_components=config.umap_n_components,
+                    umap_n_neighbors=config.umap_n_neighbors,
+                    umap_min_dist=config.umap_min_dist,
+                    hdbscan_min_cluster_size=config.hdbscan_min_cluster_size,
+                    hdbscan_min_samples=config.hdbscan_min_samples,
+                    kmeans_n_clusters=config.kmeans_n_clusters,
+                )
+                cluster_result = discoverer.fit(user_hourly_original)
+
+                labeler = ClusterLabeler(top_n=config.cluster_label_top_n)
+                cluster_labels = labeler.label_clusters(cluster_result)
+
+                if config.map_to_predefined:
+                    predefined_map = labeler.map_to_predefined(
+                        cluster_result, config.topics, embedding_provider,
+                        config.map_similarity_threshold,
+                    )
+                    for cid, mapped_name in predefined_map.items():
+                        if mapped_name:
+                            cluster_labels[cid] = mapped_name
+
+                cluster_block_finder = ClusterBlockFinder()
+                user_blocks = cluster_block_finder.find_all_blocks(cluster_result, cluster_labels)
+
+                processor = SegmentProcessor(date_list)
+                segments = processor.process_cluster_segments(
+                    user_blocks,
+                    user_hourly_messages,
+                    cluster_result,
+                    cluster_block_finder,
+                )
+
+                clustering_metrics = self._calculate_clustering_metrics(cluster_result, cluster_labels)
+            else:
+                # 4. Initialize Probability Calculator (supervised path)
+                prob_calc = ProbabilityCalculator(
+                    topics=config.topics,
+                    embedding_provider=embedding_provider,
+                    keybert_model=config.keybert_model,
+                    calculation_mode=calc_mode,
+                    use_keybert=config.use_keybert,
+                    keyword_provider=keyword_provider,
+                )
+
+                block_finder = ContiguousBlockFinder(
+                    config.probability_threshold,
+                    prob_calc,
+                    prefilter_sim_threshold=getattr(config, 'prefilter_sim_threshold', 0.0),
+                )
+
+                user_blocks = block_finder.find_all_blocks(
+                    user_hourly_texts,
+                    user_hourly_original,
+                    config.topics,
+                )
+
+                processor = SegmentProcessor(date_list)
+                segments = processor.process_segments(
+                    user_blocks,
+                    user_hourly_texts,
+                    user_hourly_original,
+                    user_hourly_messages,
+                    prob_calc,
+                )
+
+                prob_calc.keybert_calc.log_timing_stats()
 
             times["analysis"] = time.time() - analysis_start
-            prob_calc.keybert_calc.log_timing_stats()
 
             # 6. Collect metrics
             total_time = time.time() - start_time
@@ -222,10 +271,10 @@ class ScopeEvaluator:
             # Quality metrics
             quality = self._calculate_quality_metrics(segments, len(df), date_list)
 
-            # Accuracy metrics
+            # Accuracy metrics (only for supervised mode)
             accuracy = None
             accuracy_fingerprint = config.accuracy_fingerprint
-            if labeled_data_path:
+            if labeled_data_path and not config.discover_topics:
                 self.logger.info("Calculating accuracy metrics on test data...")
                 accuracy = self._calculate_accuracy_metrics(labeled_data_path, prob_calc, text_cleaner)
 
@@ -249,6 +298,7 @@ class ScopeEvaluator:
                 quality=quality,
                 timestamp=datetime.now().isoformat(),
                 accuracy=accuracy,
+                clustering=clustering_metrics,
             )
 
             # Flush disk caches
@@ -525,6 +575,43 @@ class ScopeEvaluator:
                 import traceback
                 traceback.print_exc()
             return None
+
+    def _calculate_clustering_metrics(
+        self,
+        cluster_result: "ClusterResult",
+        cluster_labels: dict[int, str],
+    ) -> ClusteringMetrics:
+        """Calculate clustering quality metrics."""
+        from sklearn.metrics import silhouette_score
+
+        labels = cluster_result.labels
+        reduced = cluster_result.reduced_embeddings
+
+        # Filter out noise for silhouette calculation
+        non_noise_mask = labels != -1
+        if non_noise_mask.sum() > 1 and len(set(labels[non_noise_mask])) > 1:
+            sil_score = silhouette_score(reduced[non_noise_mask], labels[non_noise_mask])
+        else:
+            sil_score = 0.0
+
+        noise_ratio = cluster_result.noise_count / len(labels) if len(labels) > 0 else 0.0
+
+        # Cluster sizes
+        cluster_sizes: dict[str, int] = {}
+        for label_id in sorted(set(labels)):
+            cluster_size = int((labels == label_id).sum())
+            if label_id == -1:
+                cluster_sizes["noise"] = cluster_size
+            else:
+                label_str = cluster_labels.get(label_id, f"cluster_{label_id}")
+                cluster_sizes[label_str] = cluster_sizes.get(label_str, 0) + cluster_size
+
+        return ClusteringMetrics(
+            n_clusters=cluster_result.n_clusters,
+            noise_ratio=noise_ratio,
+            silhouette_score=sil_score,
+            cluster_sizes=cluster_sizes,
+        )
 
     def _save_results(self, metrics: EvaluationMetrics, segments: list[dict]) -> None:
         """Save evaluation results to files."""
