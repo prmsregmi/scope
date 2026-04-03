@@ -60,6 +60,14 @@ class TopicDiscoverer:
         """
         users, hour_indices, texts = self._collect_texts(user_hourly_original)
 
+        if not texts:
+            tqdm.write("[discovery] no non-empty hour-texts found — nothing to cluster")
+            return ClusterResult(
+                users=[], hour_indices=[], texts=[], labels=np.array([], dtype=int),
+                probabilities=np.array([]), embeddings=np.empty((0, 0)),
+                reduced_embeddings=np.empty((0, 0)), n_clusters=0, noise_count=0,
+            )
+
         tqdm.write(f"[discovery] {len(texts)} non-empty hour-texts from {len(set(users))} users")
 
         embeddings = self._embed(texts)

@@ -681,13 +681,23 @@ def run_discovery(config: ScopeConfig) -> None:
     )
 
     # 3. Init embedding provider
-    primary_model = config.embedding_model or "all-MiniLM-L12-v2"
+    primary_model = config.embedding_model or (
+        "jina-embeddings-v3" if config.embedding_provider == "jina" else "all-MiniLM-L12-v2"
+    )
     disk_cache = _create_disk_cache(config, primary_model)
+
+    provider_kwargs = {
+        "model": config.embedding_model,
+        "api_key": config.jina_api_key,
+        "disk_cache": disk_cache,
+    }
+    if config.embedding_provider == "jina":
+        provider_kwargs["parallel_requests"] = config.jina_parallel_requests
+        provider_kwargs["max_workers"] = config.jina_max_workers
+
     embedding_provider = get_embedding_provider(
         config.embedding_provider,
-        model=config.embedding_model,
-        api_key=config.jina_api_key,
-        disk_cache=disk_cache,
+        **provider_kwargs,
     )
 
     # 4. Discover topics

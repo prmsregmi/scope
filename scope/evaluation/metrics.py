@@ -278,7 +278,9 @@ class EvaluationMetrics:
             lines.append(f"  Silhouette Score: {self.clustering.silhouette_score:.4f}")
             if self.clustering.nmi is not None:
                 lines.append(f"  NMI: {self.clustering.nmi:.4f}")
+            if self.clustering.ari is not None:
                 lines.append(f"  ARI: {self.clustering.ari:.4f}")
+            if self.clustering.v_measure is not None:
                 lines.append(f"  V-Measure: {self.clustering.v_measure:.4f}")
             if self.clustering.mean_purity is not None:
                 lines.append(f"  Mean Purity: {self.clustering.mean_purity:.4f}")

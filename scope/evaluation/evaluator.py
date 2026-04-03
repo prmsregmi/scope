@@ -597,13 +597,14 @@ class ScopeEvaluator:
         noise_ratio = cluster_result.noise_count / len(labels) if len(labels) > 0 else 0.0
 
         # Cluster sizes
-        cluster_sizes = {}
+        cluster_sizes: dict[str, int] = {}
         for label_id in sorted(set(labels)):
+            cluster_size = int((labels == label_id).sum())
             if label_id == -1:
-                cluster_sizes["noise"] = int((labels == label_id).sum())
+                cluster_sizes["noise"] = cluster_size
             else:
                 label_str = cluster_labels.get(label_id, f"cluster_{label_id}")
-                cluster_sizes[label_str] = int((labels == label_id).sum())
+                cluster_sizes[label_str] = cluster_sizes.get(label_str, 0) + cluster_size
 
         return ClusteringMetrics(
             n_clusters=cluster_result.n_clusters,
